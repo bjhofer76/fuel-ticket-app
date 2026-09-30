@@ -18,7 +18,9 @@ function App() {
 const [customers, setCustomers] = useState<Customer[]>([]);
 const [products, setProducts] = useState<Product[]>([]);
  
-const [ticketNumber, setTicketNumber] = useState("");
+const [ticketNumber, setTicketNumber] = useState(
+`FT-${Date.now()}`
+);
 const [customerId, setCustomerId] = useState("");
 const [productId, setProductId] = useState("");
 const [quantity, setQuantity] = useState("");
@@ -68,7 +70,7 @@ if (error) {
 setMessage(`Error: ${error.message}`);
 } else {
 setMessage("Ticket Saved!");
-setTicketNumber("");
+setTicketNumber(`FT-${Date.now()}`);
 setCustomerId("");
 setProductId("");
 setQuantity("");

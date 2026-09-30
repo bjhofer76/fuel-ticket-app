@@ -146,6 +146,26 @@ value={location}
 onChange={(e) => setLocation(e.target.value)}
 />
 </div>
+<br />
+ 
+<div>
+<label>Price Per Gallon</label>
+<br />
+<input
+type="number"
+step="0.001"
+value={pricePerGallon}
+onChange={(e) => setPricePerGallon(e.target.value)}
+/>
+</div>
+ 
+<br />
+ 
+<div>
+<h3>
+Total: ${totalAmount.toFixed(2)}
+</h3>
+</div>
  
 <br />
  

@@ -1,9 +1,20 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
+
+type Customer = {
+id: number;
+business_name: string | null;
+};
  
+type Product = {
+id: number;
+product_code: string | null;
+product_name: string | null;
+excise_tax_code: string | null;
+sales_tax_code: string | null;
 function App() {
-const [customers, setCustomers] = useState([]);
-const [products, setProducts] = useState([]);
+const [customers, setCustomers] = useState<Customer[]>([]);
+const [products, setProducts] = useState<Product[]>([]);
  
 const [ticketNumber, setTicketNumber] = useState("");
 const [customerId, setCustomerId] = useState("");

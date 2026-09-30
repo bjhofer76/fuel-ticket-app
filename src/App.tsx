@@ -47,6 +47,10 @@ setProducts(productData || []);
 }
  
 async function saveTicket() {
+  if (!customerId || !productId || !location || !quantity) {
+setMessage("Please complete all fields");
+return;
+}
 const selectedProduct = products.find(
 (p) => p.id === Number(productId)
 );

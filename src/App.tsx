@@ -12,6 +12,8 @@ product_code: string | null;
 product_name: string | null;
 excise_tax_code: string | null;
 sales_tax_code: string | null;
+};
+  
 function App() {
 const [customers, setCustomers] = useState<Customer[]>([]);
 const [products, setProducts] = useState<Product[]>([]);

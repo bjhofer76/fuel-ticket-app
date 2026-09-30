@@ -37,13 +37,11 @@ loadData();
 async function loadData() {
 const { data: customerData } = await supabase
 .from("customers")
-.select("*")
-.eq("active", true);
+.select("*");
  
 const { data: productData } = await supabase
 .from("products")
-.select("*")
-.eq("active", true);
+.select("*");
  
 setCustomers(customerData || []);
 setProducts(productData || []);

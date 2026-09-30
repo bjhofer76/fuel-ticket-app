@@ -24,6 +24,9 @@ const [ticketNumber, setTicketNumber] = useState(
 const [customerId, setCustomerId] = useState("");
 const [productId, setProductId] = useState("");
 const [quantity, setQuantity] = useState("");
+const [pricePerGallon, setPricePerGallon] = useState("");
+const totalAmount =
+Number(quantity || 0) * Number(pricePerGallon || 0);
 const [location, setLocation] = useState("");
 const [message, setMessage] = useState("");
  

@@ -1,16 +1,53 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
  
 function App() {
+const [customers, setCustomers] = useState([]);
+const [products, setProducts] = useState([]);
+ 
+const [ticketNumber, setTicketNumber] = useState("");
+const [customerId, setCustomerId] = useState("");
+const [productId, setProductId] = useState("");
+const [quantity, setQuantity] = useState("");
+const [location, setLocation] = useState("");
 const [message, setMessage] = useState("");
  
-const saveTicket = async () => {
+useEffect(() => {
+loadData();
+}, []);
+ 
+async function loadData() {
+const { data: customerData } = await supabase
+.from("customers")
+.select("*")
+.eq("active", true);
+ 
+const { data: productData } = await supabase
+.from("products")
+.select("*")
+.eq("active", true);
+ 
+setCustomers(customerData || []);
+setProducts(productData || []);
+}
+ 
+async function saveTicket() {
+const selectedProduct = products.find(
+(p) => p.id === Number(productId)
+);
+ 
 const { error } = await supabase
 .from("delivery_tickets")
 .insert([
 {
-ticket_number: "TEST-001",
-quantity: 100
+ticket_number: ticketNumber,
+customer_id: Number(customerId),
+quantity: Number(quantity),
+location: location,
+product_code: selectedProduct?.product_code,
+product_name: selectedProduct?.product_name,
+excise_tax_code: selectedProduct?.excise_tax_code,
+sales_tax_code: selectedProduct?.sales_tax_code
 }
 ]);
  
@@ -18,15 +55,92 @@ if (error) {
 setMessage(`Error: ${error.message}`);
 } else {
 setMessage("Ticket Saved!");
+setTicketNumber("");
+setCustomerId("");
+setProductId("");
+setQuantity("");
+setLocation("");
 }
-};
+}
  
 return (
 <div style={{ padding: "20px" }}>
 <h1>Fuel Delivery Ticket App</h1>
  
+<div>
+<label>Ticket Number</label>
+<br />
+<input
+value={ticketNumber}
+onChange={(e) => setTicketNumber(e.target.value)}
+/>
+</div>
+ 
+<br />
+ 
+<div>
+<label>Customer</label>
+<br />
+<select
+value={customerId}
+onChange={(e) => setCustomerId(e.target.value)}
+>
+<option value="">Select Customer</option>
+ 
+{customers.map((customer) => (
+<option key={customer.id} value={customer.id}>
+{customer.business_name}
+</option>
+))}
+</select>
+</div>
+ 
+<br />
+ 
+<div>
+<label>Product</label>
+<br />
+<select
+value={productId}
+onChange={(e) => setProductId(e.target.value)}
+>
+<option value="">Select Product</option>
+ 
+{products.map((product) => (
+<option key={product.id} value={product.id}>
+{product.product_name}
+</option>
+))}
+</select>
+</div>
+ 
+<br />
+ 
+<div>
+<label>Location</label>
+<br />
+<input
+value={location}
+onChange={(e) => setLocation(e.target.value)}
+/>
+</div>
+ 
+<br />
+ 
+<div>
+<label>Quantity</label>
+<br />
+<input
+type="number"
+value={quantity}
+onChange={(e) => setQuantity(e.target.value)}
+/>
+</div>
+ 
+<br />
+ 
 <button onClick={saveTicket}>
-Save Test Ticket
+Save Ticket
 </button>
  
 <p>{message}</p>

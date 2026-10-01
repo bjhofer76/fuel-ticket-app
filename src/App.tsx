@@ -27,6 +27,8 @@ type Product = {
 	code?: string | null;
 	sku?: string | null;
 	sell_price?: number | string | null;
+	excise_tax_code?: string | number | null;
+	sales_tax_code?: string | number | null;
 	[key: string]: unknown;
 };
 
@@ -473,6 +475,8 @@ function App() {
 					location: location.trim(),
 					product_code: selectedProductCode,
 					product_name: selectedProductName || productLabel(selectedProduct, Number(selectedProductIndex)),
+					excise_tax_code: selectedProduct.excise_tax_code,
+					sales_tax_code: selectedProduct.sales_tax_code,
 					quantity: quantityValue,
 					sell_price: selectedSellPrice,
 					extended_amount: extendedAmount,

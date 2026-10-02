@@ -449,6 +449,95 @@ a {
   gap: 18px 20px;
 }
 
+.product-lines-field {
+  min-width: 0;
+  padding: 16px;
+  grid-column: 1 / -1;
+  border: 1px solid #e0e7e2;
+  background: #fbfcfb;
+}
+
+.product-lines-heading {
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.product-lines-heading h3 {
+  margin: 0;
+  color: #314b40;
+  font-family: var(--heading);
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.add-product-button,
+.remove-product-button {
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid #cbded1;
+  background: #fff;
+  color: #216f50;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.add-product-button span {
+  margin-right: 5px;
+  font-size: 16px;
+  vertical-align: -1px;
+}
+
+.remove-product-button {
+  min-width: 72px;
+  border-color: #ead7d3;
+  color: #9b4d40;
+}
+
+.remove-product-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.product-lines-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.product-line-row {
+  min-width: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1.45fr) repeat(3, minmax(110px, 1fr)) auto;
+  align-items: end;
+  gap: 12px;
+  border: 1px solid #e7ece8;
+  background: #fff;
+}
+
+.product-lines-total {
+  margin-top: 12px;
+  padding-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 24px;
+  border-top: 1px solid #e3e9e4;
+  color: #718078;
+  font-size: 11px;
+}
+
+.product-lines-total strong {
+  margin-left: 5px;
+  color: #244d3b;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
 .form-field {
   min-width: 0;
   display: flex;
@@ -505,6 +594,14 @@ a {
   background: #fbf1ef;
   color: #923e31;
   font-size: 12px;
+}
+
+.line-items-warning {
+  padding: 10px 16px;
+  border-bottom: 1px solid #ecd7ce;
+  background: #fff7f3;
+  color: #884b3e;
+  font-size: 11px;
 }
 
 .ticket-form-footer {
@@ -988,6 +1085,36 @@ tbody tr:hover {
   border-bottom: 1px solid #e6ece7;
 }
 
+.ticket-line-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ticket-line-card {
+  padding: 14px;
+  border: 1px solid #e0e9e2;
+  background: #fbfcfb;
+}
+
+.ticket-line-title,
+.ticket-line-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 13px 20px;
+}
+
+.ticket-line-details {
+  margin-top: 13px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ticket-line-tax-details {
+  padding-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid #e6ece7;
+}
+
 .ticket-section-label {
   margin: 0 0 13px;
   color: #40745b;
@@ -1347,6 +1474,50 @@ tbody tr:hover {
     padding: 18px 17px;
     grid-template-columns: minmax(0, 1fr);
     gap: 15px;
+  }
+
+  .product-line-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .product-line-product {
+    grid-column: 1 / -1;
+  }
+
+  .ticket-line-details {
+    gap: 12px;
+  }
+
+  .product-lines-field {
+    padding: 12px;
+  }
+
+  .product-lines-heading {
+    align-items: flex-start;
+  }
+
+  .product-line-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .product-line-product {
+    grid-column: auto;
+  }
+
+  .remove-product-button {
+    width: 100%;
+  }
+
+  .product-lines-total {
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .ticket-line-title,
+  .ticket-line-details,
+  .ticket-line-tax-details {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .reference-error {

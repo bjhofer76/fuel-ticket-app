@@ -3,13 +3,27 @@ import { supabase } from "./lib/supabase";
 import { companyCityLine, companyInfo } from "./lib/company-settings";
 import "./App.css";
 
+type TicketLine = {
+	id?: string | number;
+	ticket_id?: string | number;
+	product_code?: string | number | null;
+	product_name?: string | null;
+	quantity?: number | string | null;
+	sell_price?: number | string | null;
+	extended_amount?: number | string | null;
+	excise_tax_code?: string | number | null;
+	sales_tax_code?: string | number | null;
+};
+
 type Ticket = {
+	id?: string | number;
 	ticket_number?: string | number | null;
 	customer_id?: string | number | null;
 	business_name?: string | null;
 	location?: string | null;
 	driver_name?: string | null;
 	delivery_date?: string | null;
+	items?: TicketLine[];
 	product_code?: string | number | null;
 	product_name?: string | null;
 	quantity?: number | string | null;
@@ -45,6 +59,13 @@ type Driver = {
 	name?: string | null;
 };
 
+type ProductLineDraft = {
+	id: string;
+	productIndex: string;
+	quantity: string;
+	sellPrice: string;
+};
+
 type DeliveryDateFilter = "all" | "today" | "7days" | "30days" | "year";
 
 const getLocalDateInputValue = () => {
@@ -55,8 +76,50 @@ const getLocalDateInputValue = () => {
 	return `${year}-${month}-${day}`;
 };
 
+const createProductLineDraft = (): ProductLineDraft => ({
+	id: crypto.randomUUID(),
+	productIndex: "",
+	quantity: "",
+	sellPrice: "",
+});
+
 const generateTicketNumber = () =>
 	`TKT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
+
+const ticketLinesFor = (ticket: Ticket): TicketLine[] =>
+	ticket.items?.length ? ticket.items : [ticket];
+
+const loadTicketLines = async (tickets: Ticket[]) => {
+	const ticketIds = tickets
+		.map((ticket) => ticket.id)
+		.filter((id): id is string | number => id !== null && id !== undefined);
+	if (ticketIds.length === 0) {
+		return { tickets: tickets.map((ticket) => ({ ...ticket, items: [ticket] })), error: "" };
+	}
+
+	const { data, error } = await supabase
+		.from("delivery_ticket_items")
+		.select("*")
+		.in("ticket_id", ticketIds);
+	const itemsByTicket = new Map<string, TicketLine[]>();
+	for (const item of (data ?? []) as TicketLine[]) {
+		if (item.ticket_id === null || item.ticket_id === undefined) continue;
+		const key = String(item.ticket_id);
+		itemsByTicket.set(key, [...(itemsByTicket.get(key) ?? []), item]);
+	}
+
+	return {
+		tickets: tickets.map((ticket) => ({
+			...ticket,
+			items: ticket.id === null || ticket.id === undefined
+				? [ticket]
+				: itemsByTicket.get(String(ticket.id))?.length
+					? itemsByTicket.get(String(ticket.id))
+					: [ticket],
+		})),
+		error: error?.message ?? "",
+	};
+};
 
 function App() {
 	const [path, setPath] = useState(window.location.pathname);
@@ -74,14 +137,13 @@ function App() {
 	const [customerTicketsLoading, setCustomerTicketsLoading] = useState(false);
 	const [historyCustomersError, setHistoryCustomersError] = useState("");
 	const [customerTicketsError, setCustomerTicketsError] = useState("");
-	const [selectedProductIndex, setSelectedProductIndex] = useState("");
+	const [lineItemsWarning, setLineItemsWarning] = useState("");
+	const [productLines, setProductLines] = useState<ProductLineDraft[]>([createProductLineDraft()]);
 	const [selectedCustomerIndex, setSelectedCustomerIndex] = useState("");
 	const [driverNames, setDriverNames] = useState<string[]>([]);
 	const [driverName, setDriverName] = useState("");
 	const [deliveryDate, setDeliveryDate] = useState(getLocalDateInputValue);
 	const [location, setLocation] = useState("");
-	const [quantity, setQuantity] = useState("");
-	const [sellPrice, setSellPrice] = useState("");
 	const [referencesLoading, setReferencesLoading] = useState(false);
 	const [savingTicket, setSavingTicket] = useState(false);
 	const [referenceError, setReferenceError] = useState("");
@@ -125,7 +187,11 @@ function App() {
 				}
 
 				const ticketRows = (ticketResult.data ?? []) as Ticket[];
-				setTickets(ticketRows.map((ticket) => {
+				const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines(ticketRows);
+				setLineItemsWarning(lineItemsError
+					? `Product lines could not be loaded (${lineItemsError}). Showing each ticket's saved header product when available.`
+					: "");
+				setTickets(ticketsWithLines.map((ticket) => {
 					const customer = ticket.customer_id == null
 						? undefined
 						: customerById.get(String(ticket.customer_id));
@@ -184,7 +250,12 @@ function App() {
 				setCustomerTicketsError(queryError.message);
 				setCustomerHistoryTickets([]);
 			} else {
-				setCustomerHistoryTickets((data ?? []) as Ticket[]);
+				const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines((data ?? []) as Ticket[]);
+				if (!active) return;
+				setLineItemsWarning(lineItemsError
+					? `Product lines could not be loaded (${lineItemsError}). Showing each ticket's saved header product when available.`
+					: "");
+				setCustomerHistoryTickets(ticketsWithLines);
 			}
 			setCustomerTicketsLoading(false);
 		};
@@ -261,16 +332,16 @@ function App() {
 
 	const normalizedSearch = search.trim().toLowerCase();
 	const filteredTickets = tickets.filter((ticket) =>
-		`${ticket.ticket_number ?? ""} ${ticket.product_name ?? ""}`
+		`${ticket.ticket_number ?? ""} ${ticketLinesFor(ticket).map((item) => item.product_name ?? "").join(" ")}`
 			.toLowerCase()
 			.includes(normalizedSearch),
 	);
 	const totalGallons = tickets.reduce(
-		(total, ticket) => total + (Number(ticket.quantity) || 0),
+		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0),
 		0,
 	);
 	const totalRevenue = tickets.reduce(
-		(total, ticket) => total + (Number(ticket.extended_amount) || 0),
+		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.extended_amount) || 0), 0),
 		0,
 	);
 	const normalizedCustomerSearch = customerSearch.trim().toLowerCase();
@@ -312,28 +383,42 @@ function App() {
 		})
 		: customerHistoryTickets;
 	const customerHistoryGallons = customerVisibleTickets.reduce(
-		(total, ticket) => total + (Number(ticket.quantity) || 0),
+		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0),
 		0,
 	);
 	const customerHistoryRevenue = customerVisibleTickets.reduce(
-		(total, ticket) => total + (Number(ticket.extended_amount) || 0),
+		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.extended_amount) || 0), 0),
 		0,
 	);
 	const selectedCustomer = selectedCustomerIndex === ""
 		? null
 		: customers[Number(selectedCustomerIndex)] ?? null;
-	const selectedProduct = selectedProductIndex === ""
-		? null
-		: products[Number(selectedProductIndex)] ?? null;
-	const selectedProductCode = String(
-		selectedProduct?.product_code ?? selectedProduct?.code ?? selectedProduct?.sku ?? "",
+	const preparedProductLines = productLines.map((line) => {
+		const product = line.productIndex === "" ? null : products[Number(line.productIndex)] ?? null;
+		const quantityValue = Number(line.quantity);
+		const sellPriceValue = Number(line.sellPrice);
+		return {
+			...line,
+			product,
+			productCode: String(product?.product_code ?? product?.code ?? product?.sku ?? ""),
+			productName: String(product?.product_name ?? product?.name ?? product?.title ?? ""),
+			quantityValue,
+			sellPriceValue,
+			extendedAmount: quantityValue * sellPriceValue,
+			isValid: Boolean(product) && line.quantity.trim() !== "" &&
+				Number.isFinite(quantityValue) && quantityValue > 0 &&
+				line.sellPrice.trim() !== "" && Number.isFinite(sellPriceValue) && sellPriceValue >= 0,
+		};
+	});
+	const hasValidProductLines = preparedProductLines.length > 0 && preparedProductLines.every((line) => line.isValid);
+	const draftTotalGallons = preparedProductLines.reduce(
+		(total, line) => total + (Number.isFinite(line.quantityValue) && line.quantityValue > 0 ? line.quantityValue : 0),
+		0,
 	);
-	const selectedProductName = String(
-		selectedProduct?.product_name ?? selectedProduct?.name ?? selectedProduct?.title ?? "",
+	const draftGrandTotal = preparedProductLines.reduce(
+		(total, line) => total + (Number.isFinite(line.extendedAmount) && line.extendedAmount > 0 ? line.extendedAmount : 0),
+		0,
 	);
-	const selectedSellPrice = Number(sellPrice) || 0;
-	const quantityValue = Number(quantity) || 0;
-	const extendedAmount = quantityValue * selectedSellPrice;
 
 	const formatCurrency = (value: unknown) =>
 		new Intl.NumberFormat("en-US", {
@@ -386,6 +471,7 @@ function App() {
 		const { jsPDF } = await import("jspdf");
 		const pdf = new jsPDF({ unit: "pt", format: "letter" });
 		const pageWidth = pdf.internal.pageSize.getWidth();
+		const pageHeight = pdf.internal.pageSize.getHeight();
 		const margin = 44;
 		const contentWidth = pageWidth - margin * 2;
 		const columnGap = 24;
@@ -439,6 +525,12 @@ function App() {
 		pdf.text(`Created ${formatDate(ticket.created_at)}`, pageWidth - margin, 74, { align: "right" });
 
 		let y = 181;
+		const ensurePdfSpace = (height: number) => {
+			if (y + height > pageHeight - margin) {
+				pdf.addPage();
+				y = margin;
+			}
+		};
 		drawSectionTitle("Delivery details", y);
 		y += 18;
 		const customerBottom = drawField("Business name", ticketBusinessName(ticket), margin, y, columnWidth);
@@ -448,19 +540,33 @@ function App() {
 		const deliveryDateBottom = drawField("Delivery date", formatDeliveryDate(ticket.delivery_date), margin + columnWidth + columnGap, y, columnWidth);
 		y = Math.max(driverBottom, deliveryDateBottom) + 22;
 
-		drawSectionTitle("Product", y);
+		drawSectionTitle("Product lines", y);
 		y += 18;
-		const codeBottom = drawField("Product code", formatDetail(ticket.product_code), margin, y, columnWidth);
-		const nameBottom = drawField("Product name", formatDetail(ticket.product_name), margin + columnWidth + columnGap, y, columnWidth);
-		y = Math.max(codeBottom, nameBottom) + 23;
+		const ticketItems = ticketLinesFor(ticket);
+		const itemGap = 12;
+		const itemColumnWidth = (contentWidth - itemGap * 2) / 3;
+		for (const [index, item] of ticketItems.entries()) {
+			ensurePdfSpace(112);
+			const productBottom = drawField(`Product ${index + 1}`, formatDetail(item.product_name), margin, y, columnWidth);
+			const codeBottom = drawField("Product code", formatDetail(item.product_code), margin + columnWidth + columnGap, y, columnWidth);
+			y = Math.max(productBottom, codeBottom) + 8;
+			const quantityBottom = drawField("Gallons", Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 }), margin, y, itemColumnWidth);
+			const priceBottom = drawField("Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
+			const amountBottom = drawField("Line amount", formatCurrency(item.extended_amount), margin + (itemColumnWidth + itemGap) * 2, y, itemColumnWidth);
+			y = Math.max(quantityBottom, priceBottom, amountBottom) + 8;
+			const exciseBottom = drawField("Excise tax code", formatDetail(item.excise_tax_code ?? ticket.excise_tax_code), margin, y, columnWidth);
+			const salesTaxBottom = drawField("Sales tax code", formatDetail(item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
+			y = Math.max(exciseBottom, salesTaxBottom) + 14;
+		}
 
 		const statGap = 10;
 		const statWidth = (contentWidth - statGap * 2) / 3;
 		const statHeight = 76;
+		ensurePdfSpace(statHeight + 70);
 		const stats = [
-			["GALLONS", `${(Number(ticket.quantity) || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
-			["PRICE / GALLON", formatUnitPrice(ticket.sell_price)],
-			["TOTAL AMOUNT", formatCurrency(ticket.extended_amount)],
+			["TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
+			["PRODUCT LINES", String(ticketItems.length)],
+			["TOTAL AMOUNT", formatCurrency(ticketItems.reduce((total, item) => total + (Number(item.extended_amount) || 0), 0))],
 		];
 		stats.forEach(([label, value], index) => {
 			const x = margin + index * (statWidth + statGap);
@@ -476,11 +582,8 @@ function App() {
 		});
 		y += statHeight + 29;
 
-		drawSectionTitle("Tax codes", y);
-		y += 18;
-		const exciseBottom = drawField("Excise tax code", formatDetail(ticket.excise_tax_code), margin, y, columnWidth);
-		const salesTaxBottom = drawField("Sales tax code", formatDetail(ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
-		y = Math.max(exciseBottom, salesTaxBottom) + 28;
+		ensurePdfSpace(48);
+		y += 8;
 		pdf.setDrawColor(222, 231, 225);
 		pdf.line(margin, y, pageWidth - margin, y);
 		pdf.setFont("helvetica", "normal");
@@ -493,14 +596,10 @@ function App() {
 	const createTicket = async (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (
-			!selectedProduct ||
 			!selectedCustomer ||
 			!driverName ||
 			!deliveryDate ||
-			quantityValue <= 0 ||
-			!sellPrice.trim() ||
-			!Number.isFinite(Number(sellPrice)) ||
-			Number(sellPrice) < 0 ||
+			!hasValidProductLines ||
 			!location.trim()
 		) return;
 
@@ -508,9 +607,10 @@ function App() {
 		setFormError("");
 		setFormMessage("");
 		const generatedTicketNumber = generateTicketNumber();
+		const firstLine = preparedProductLines[0];
 
 		try {
-			const { error: insertError } = await supabase
+			const { data: insertedTicket, error: insertError } = await supabase
 				.from("delivery_tickets")
 				.insert({
 					ticket_number: generatedTicketNumber,
@@ -518,28 +618,51 @@ function App() {
 					driver_name: driverName,
 					delivery_date: deliveryDate,
 					location: location.trim(),
-					product_code: selectedProductCode,
-					product_name: selectedProductName || productLabel(selectedProduct, Number(selectedProductIndex)),
-					excise_tax_code: selectedProduct.excise_tax_code,
-					sales_tax_code: selectedProduct.sales_tax_code,
-					quantity: quantityValue,
-					sell_price: selectedSellPrice,
-					extended_amount: extendedAmount,
-				});
+					product_code: firstLine.productCode,
+					product_name: firstLine.productName || productLabel(firstLine.product!, Number(firstLine.productIndex)),
+					excise_tax_code: firstLine.product?.excise_tax_code,
+					sales_tax_code: firstLine.product?.sales_tax_code,
+					quantity: draftTotalGallons,
+					sell_price: firstLine.sellPriceValue,
+					extended_amount: draftGrandTotal,
+				})
+				.select("id")
+				.single();
 
 			if (insertError) {
 				setFormError(insertError.message);
 				return;
 			}
+			if (insertedTicket?.id === undefined || insertedTicket.id === null) {
+				setFormError("The ticket was created, but its ID could not be retrieved for saving product lines.");
+				return;
+			}
+
+			const lineItems = preparedProductLines.map((line) => ({
+				ticket_id: insertedTicket.id,
+				product_code: line.productCode,
+				product_name: line.productName || productLabel(line.product!, Number(line.productIndex)),
+				quantity: line.quantityValue,
+				sell_price: line.sellPriceValue,
+				extended_amount: line.extendedAmount,
+				excise_tax_code: line.product?.excise_tax_code,
+				sales_tax_code: line.product?.sales_tax_code,
+			}));
+			const { error: lineItemsError } = await supabase
+				.from("delivery_ticket_items")
+				.insert(lineItems);
+
+			if (lineItemsError) {
+				setFormError(`Ticket ${generatedTicketNumber} was created, but its product lines could not be saved: ${lineItemsError.message}`);
+				return;
+			}
 
 			setFormMessage(`Ticket ${generatedTicketNumber} saved.`);
-			setSelectedProductIndex("");
+			setProductLines([createProductLineDraft()]);
 			setSelectedCustomerIndex("");
 			setDriverName("");
 			setDeliveryDate(getLocalDateInputValue());
 			setLocation("");
-			setQuantity("");
-			setSellPrice("");
 		} catch (submissionError) {
 			setFormError(submissionError instanceof Error ? submissionError.message : "Unable to save ticket.");
 		} finally {
@@ -615,6 +738,7 @@ function App() {
 						</section>
 
 						<section className="ticket-section" aria-label="Delivery tickets">
+							{lineItemsWarning && <p className="line-items-warning" role="alert">{lineItemsWarning}</p>}
 							<div className="table-toolbar">
 								<div>
 									<h2>All tickets</h2>
@@ -676,30 +800,27 @@ function App() {
 											</tr>
 										</thead>
 										<tbody>
-											{filteredTickets.map((ticket, index) => (
-												<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${index}`}>
-													<td className="ticket-number">{ticket.ticket_number ?? "—"}</td>
-													<td>{ticketBusinessName(ticket)}</td>
-													<td>{formatDetail(ticket.driver_name)}</td>
-													<td className="date-cell">{formatDeliveryDate(ticket.delivery_date)}</td>
-													<td className="product-cell">{ticket.product_name ?? "—"}</td>
-													<td className="numeric-cell">
-														{Number(ticket.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}
-													</td>
-													<td className="numeric-cell">{formatCurrency(ticket.sell_price)}</td>
-													<td className="numeric-cell amount-cell">{formatCurrency(ticket.extended_amount)}</td>
-													<td className="date-cell">{formatDate(ticket.created_at)}</td>
-													<td>
-														<button
-															className="view-button"
-															type="button"
-															onClick={() => setSelectedTicket(ticket)}
-														>
-															View
-														</button>
-													</td>
+										{filteredTickets.flatMap((ticket, index) => {
+											const lines = ticketLinesFor(ticket);
+											return lines.map((item, itemIndex) => (
+												<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${item.id ?? itemIndex}`}>
+													{itemIndex === 0 && <td className="ticket-number" rowSpan={lines.length}>{ticket.ticket_number ?? "—"}</td>}
+													{itemIndex === 0 && <td rowSpan={lines.length}>{ticketBusinessName(ticket)}</td>}
+													{itemIndex === 0 && <td rowSpan={lines.length}>{formatDetail(ticket.driver_name)}</td>}
+													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDeliveryDate(ticket.delivery_date)}</td>}
+													<td className="product-cell">{item.product_name ?? "—"}</td>
+													<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+													<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
+													<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
+													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDate(ticket.created_at)}</td>}
+													{itemIndex === 0 && (
+														<td rowSpan={lines.length}>
+															<button className="view-button" type="button" onClick={() => setSelectedTicket(ticket)}>View</button>
+														</td>
+													)}
 												</tr>
-											))}
+											));
+										})}
 										</tbody>
 									</table>
 									<div className="table-footer">
@@ -961,73 +1082,98 @@ function App() {
 										}}
 									/>
 								</label>
-								<label className="form-field">
-									<span>Product</span>
-									<select
-										required
-										value={selectedProductIndex}
-										onChange={(event) => {
-											const nextIndex = event.target.value;
-											setSelectedProductIndex(nextIndex);
-											setSellPrice(
-												nextIndex === ""
-												? ""
-												: String(products[Number(nextIndex)]?.sell_price ?? ""),
-											);
-											setFormMessage("");
-										}}
-										disabled={referencesLoading || products.length === 0}
-									>
-										<option value="">{referencesLoading ? "Loading products…" : "Select a product"}</option>
-										{products.map((product, index) => (
-											<option value={index} key={`${product.id ?? productLabel(product, index)}-${index}`}>
-												{productLabel(product, index)}
-											</option>
+								<div className="product-lines-field">
+									<div className="product-lines-heading">
+										<h3>Product lines</h3>
+										<button
+											className="add-product-button"
+											type="button"
+											onClick={() => setProductLines((current) => [...current, createProductLineDraft()])}
+										>
+											<span aria-hidden="true">+</span> Add Product
+										</button>
+									</div>
+									<div className="product-lines-list">
+										{preparedProductLines.map((line, index) => (
+											<div className="product-line-row" key={line.id}>
+												<label className="form-field product-line-product">
+													<span>Product {index + 1}</span>
+													<select
+														required
+														value={line.productIndex}
+														onChange={(event) => {
+															const productIndex = event.target.value;
+															setProductLines((current) => current.map((draft) => draft.id === line.id
+																? {
+																	...draft,
+																	productIndex,
+																	sellPrice: productIndex === "" ? "" : String(products[Number(productIndex)]?.sell_price ?? ""),
+																}
+																: draft));
+															setFormMessage("");
+														}}
+														disabled={referencesLoading || products.length === 0}
+													>
+														<option value="">{referencesLoading ? "Loading products…" : "Select a product"}</option>
+														{products.map((product, productIndex) => (
+															<option value={productIndex} key={`${product.id ?? productLabel(product, productIndex)}-${productIndex}`}>
+																{productLabel(product, productIndex)}
+															</option>
+														))}
+													</select>
+												</label>
+												<label className="form-field">
+													<span>Quantity (gallons)</span>
+													<input
+														required
+														type="number"
+														min="0.01"
+														step="0.01"
+														value={line.quantity}
+														onChange={(event) => {
+															const quantity = event.target.value;
+															setProductLines((current) => current.map((draft) => draft.id === line.id ? { ...draft, quantity } : draft));
+															setFormMessage("");
+														}}
+														placeholder="0.00"
+													/>
+												</label>
+												<label className="form-field">
+													<span>Sell price / gallon</span>
+													<input
+														required
+														type="number"
+														min="0"
+														step="0.0001"
+														value={line.sellPrice}
+														onChange={(event) => {
+															const sellPrice = event.target.value;
+															setProductLines((current) => current.map((draft) => draft.id === line.id ? { ...draft, sellPrice } : draft));
+															setFormMessage("");
+														}}
+														placeholder="0.0000"
+													/>
+												</label>
+												<label className="form-field calculated-field amount-field">
+													<span>Extended amount</span>
+													<input readOnly value={line.isValid ? formatCurrency(line.extendedAmount) : ""} placeholder="Calculated automatically" />
+												</label>
+												<button
+													className="remove-product-button"
+													type="button"
+													aria-label={`Remove product line ${index + 1}`}
+													onClick={() => setProductLines((current) => current.filter((draft) => draft.id !== line.id))}
+												>
+													Remove
+												</button>
+											</div>
 										))}
-									</select>
-								</label>
-								<label className="form-field">
-									<span>Product code</span>
-									<input readOnly value={selectedProductCode} placeholder="Filled from product" />
-								</label>
-								<label className="form-field">
-									<span>Product name</span>
-									<input readOnly value={selectedProductName || (selectedProduct ? productLabel(selectedProduct, Number(selectedProductIndex)) : "")} placeholder="Filled from product" />
-								</label>
-								<label className="form-field">
-									<span>Quantity (gallons)</span>
-									<input
-										required
-										type="number"
-										min="0.01"
-										step="0.01"
-										value={quantity}
-										onChange={(event) => {
-											setQuantity(event.target.value);
-											setFormMessage("");
-										}}
-										placeholder="0.00"
-									/>
-								</label>
-								<label className="form-field">
-									<span>Sell price / gallon</span>
-									<input
-										required
-										type="number"
-										min="0"
-										step="0.0001"
-										value={sellPrice}
-										onChange={(event) => {
-											setSellPrice(event.target.value);
-											setFormMessage("");
-										}}
-										placeholder="Filled from product"
-									/>
-								</label>
-								<label className="form-field calculated-field amount-field">
-									<span>Extended amount</span>
-									<input readOnly value={selectedProduct && quantityValue > 0 ? formatCurrency(extendedAmount) : ""} placeholder="Calculated automatically" />
-								</label>
+									</div>
+									<div className="product-lines-total">
+										<span>Total gallons <strong>{draftTotalGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong></span>
+										<span>Grand total <strong>{formatCurrency(draftGrandTotal)}</strong></span>
+									</div>
+								</div>
 								<div className="ticket-form-footer">
 									<div className="form-feedback" aria-live="polite">
 										{formError && <span className="form-error" role="alert">{formError}</span>}
@@ -1049,7 +1195,7 @@ function App() {
 									<button
 										className="submit-ticket-button"
 										type="submit"
-											disabled={savingTicket || referencesLoading || !selectedProduct || !selectedCustomer || !driverName || !deliveryDate || quantityValue <= 0 || !sellPrice.trim() || !Number.isFinite(Number(sellPrice)) || Number(sellPrice) < 0 || !location.trim()}
+											disabled={savingTicket || referencesLoading || !hasValidProductLines || !selectedCustomer || !driverName || !deliveryDate || !location.trim()}
 									>
 										{savingTicket ? "Saving…" : "Save ticket"}
 									</button>
@@ -1120,15 +1266,16 @@ function App() {
 									</div>
 									<div className="ticket-info-field">
 										<span>Business Name</span>
+										<strong>{ticketBusinessName(selectedTicket)}</strong>
 									</div>
-															<div className="ticket-info-field">
-																<span>Driver Name</span>
-																<strong>{formatDetail(selectedTicket.driver_name)}</strong>
-															</div>
-															<div className="ticket-info-field">
-																<span>Delivery Date</span>
-																<strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong>
-															</div>
+					<div className="ticket-info-field">
+						<span>Driver Name</span>
+						<strong>{formatDetail(selectedTicket.driver_name)}</strong>
+					</div>
+					<div className="ticket-info-field">
+						<span>Delivery Date</span>
+						<strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong>
+					</div>
 									<div className="ticket-info-field full-field">
 										<span>Location</span>
 										<strong>{formatDetail(selectedTicket.location)}</strong>
@@ -1136,43 +1283,65 @@ function App() {
 								</section>
 
 								<section className="ticket-product-section" aria-label="Product information">
-									<p className="ticket-section-label">Product</p>
-									<div className="ticket-product-grid">
-										<div className="ticket-info-field">
-											<span>Product Code</span>
-											<strong>{formatDetail(selectedTicket.product_code)}</strong>
-										</div>
-										<div className="ticket-info-field">
-											<span>Product Name</span>
-											<strong>{formatDetail(selectedTicket.product_name)}</strong>
-										</div>
+									<p className="ticket-section-label">Product lines</p>
+									<div className="ticket-line-list">
+										{ticketLinesFor(selectedTicket).map((item, index) => (
+											<article className="ticket-line-card" key={`${item.id ?? index}-${index}`}>
+												<div className="ticket-line-title">
+													<div className="ticket-info-field">
+														<span>Product {index + 1}</span>
+														<strong>{formatDetail(item.product_name)}</strong>
+													</div>
+													<div className="ticket-info-field">
+														<span>Product Code</span>
+														<strong>{formatDetail(item.product_code)}</strong>
+													</div>
+												</div>
+												<div className="ticket-line-details">
+													<div className="ticket-info-field">
+														<span>Gallons</span>
+														<strong>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
+													</div>
+													<div className="ticket-info-field">
+														<span>Price per gallon</span>
+														<strong>{formatUnitPrice(item.sell_price)}</strong>
+													</div>
+													<div className="ticket-info-field">
+														<span>Line amount</span>
+														<strong>{formatCurrency(item.extended_amount)}</strong>
+													</div>
+												</div>
+												<div className="ticket-line-details ticket-line-tax-details">
+													<div className="ticket-info-field">
+														<span>Excise Tax Code</span>
+														<strong>{formatDetail(item.excise_tax_code ?? selectedTicket.excise_tax_code)}</strong>
+													</div>
+													<div className="ticket-info-field">
+														<span>Sales Tax Code</span>
+														<strong>{formatDetail(item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
+													</div>
+												</div>
+											</article>
+										))}
 									</div>
 								</section>
 
 								<section className="ticket-metrics" aria-label="Delivery amounts">
 									<div className="ticket-metric">
-										<span>Gallons</span>
-										<strong>{(Number(selectedTicket.quantity) || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
+										<span>Total gallons</span>
+										<strong>{ticketLinesFor(selectedTicket).reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
 									</div>
 									<div className="ticket-metric">
-									<span>Price per gallon</span>
-									<strong>{formatUnitPrice(selectedTicket.sell_price)}</strong>
+										<span>Product lines</span>
+										<strong>{ticketLinesFor(selectedTicket).length}</strong>
 									</div>
 									<div className="ticket-metric total-metric">
-										<span>Total amount</span>
-									<strong>{formatCurrency(selectedTicket.extended_amount)}</strong>
+										<span>Grand total</span>
+										<strong>{formatCurrency(ticketLinesFor(selectedTicket).reduce((total, item) => total + (Number(item.extended_amount) || 0), 0))}</strong>
 									</div>
 								</section>
 
 								<section className="ticket-tax-grid" aria-label="Tax codes">
-									<div className="ticket-info-field">
-										<span>Excise Tax Code</span>
-										<strong>{formatDetail(selectedTicket.excise_tax_code)}</strong>
-									</div>
-									<div className="ticket-info-field">
-										<span>Sales Tax Code</span>
-										<strong>{formatDetail(selectedTicket.sales_tax_code)}</strong>
-									</div>
 									<div className="ticket-info-field">
 										<span>Created Date</span>
 										<strong>{formatDate(selectedTicket.created_at)}</strong>

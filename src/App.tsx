@@ -8,6 +8,8 @@ type Ticket = {
 	customer_id?: string | number | null;
 	business_name?: string | null;
 	location?: string | null;
+	driver_name?: string | null;
+	delivery_date?: string | null;
 	product_code?: string | number | null;
 	product_name?: string | null;
 	quantity?: number | string | null;
@@ -39,7 +41,19 @@ type Customer = {
 	[key: string]: unknown;
 };
 
+type Driver = {
+	name?: string | null;
+};
+
 type DeliveryDateFilter = "all" | "today" | "7days" | "30days" | "year";
+
+const getLocalDateInputValue = () => {
+	const today = new Date();
+	const year = today.getFullYear();
+	const month = String(today.getMonth() + 1).padStart(2, "0");
+	const day = String(today.getDate()).padStart(2, "0");
+	return `${year}-${month}-${day}`;
+};
 
 const generateTicketNumber = () =>
 	`TKT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
@@ -62,6 +76,9 @@ function App() {
 	const [customerTicketsError, setCustomerTicketsError] = useState("");
 	const [selectedProductIndex, setSelectedProductIndex] = useState("");
 	const [selectedCustomerIndex, setSelectedCustomerIndex] = useState("");
+	const [driverNames, setDriverNames] = useState<string[]>([]);
+	const [driverName, setDriverName] = useState("");
+	const [deliveryDate, setDeliveryDate] = useState(getLocalDateInputValue);
 	const [location, setLocation] = useState("");
 	const [quantity, setQuantity] = useState("");
 	const [sellPrice, setSellPrice] = useState("");
@@ -184,9 +201,10 @@ function App() {
 		const loadFormOptions = async () => {
 			setReferencesLoading(true);
 			setReferenceError("");
-			const [productsResult, customersResult] = await Promise.all([
+			const [productsResult, customersResult, driversResult] = await Promise.all([
 				supabase.from("products").select("*"),
 				supabase.from("customers").select("*"),
+				supabase.from("drivers").select("name").order("name", { ascending: true }),
 			]);
 
 			if (productsResult.error) {
@@ -200,6 +218,17 @@ function App() {
 				);
 			} else {
 				setCustomers((customersResult.data ?? []) as Customer[]);
+			}
+			if (driversResult.error) {
+				setReferenceError((current) =>
+					[current, `Drivers: ${driversResult.error.message}`].filter(Boolean).join(" "),
+				);
+			} else {
+				setDriverNames(
+					[...new Set(((driversResult.data ?? []) as Driver[])
+						.map((driver) => driver.name?.trim())
+						.filter((name): name is string => Boolean(name)))],
+				);
 			}
 			setReferencesLoading(false);
 		};
@@ -276,8 +305,10 @@ function App() {
 	})();
 	const customerVisibleTickets = customerDateStart
 		? customerHistoryTickets.filter((ticket) => {
-			const createdAt = ticket.created_at ? new Date(ticket.created_at).getTime() : Number.NaN;
-			return Number.isFinite(createdAt) && createdAt >= customerDateStart.getTime();
+			const deliveryDate = ticket.delivery_date
+				? new Date(`${ticket.delivery_date.slice(0, 10)}T00:00:00`).getTime()
+				: ticket.created_at ? new Date(ticket.created_at).getTime() : Number.NaN;
+			return Number.isFinite(deliveryDate) && deliveryDate >= customerDateStart.getTime();
 		})
 		: customerHistoryTickets;
 	const customerHistoryGallons = customerVisibleTickets.reduce(
@@ -332,6 +363,13 @@ function App() {
 					dateStyle: "medium",
 					timeStyle: "short",
 				}).format(date);
+	};
+	const formatDeliveryDate = (value: unknown) => {
+		if (!value) return "—";
+		const date = new Date(`${String(value).slice(0, 10)}T00:00:00`);
+		return Number.isNaN(date.getTime())
+			? String(value)
+			: new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
 	};
 	const formatDetail = (value: unknown) => {
 		if (value === null || value === undefined || value === "") return "—";
@@ -405,7 +443,10 @@ function App() {
 		y += 18;
 		const customerBottom = drawField("Business name", ticketBusinessName(ticket), margin, y, columnWidth);
 		const locationBottom = drawField("Location", formatDetail(ticket.location), margin + columnWidth + columnGap, y, columnWidth);
-		y = Math.max(customerBottom, locationBottom) + 22;
+		y = Math.max(customerBottom, locationBottom) + 18;
+		const driverBottom = drawField("Driver name", formatDetail(ticket.driver_name), margin, y, columnWidth);
+		const deliveryDateBottom = drawField("Delivery date", formatDeliveryDate(ticket.delivery_date), margin + columnWidth + columnGap, y, columnWidth);
+		y = Math.max(driverBottom, deliveryDateBottom) + 22;
 
 		drawSectionTitle("Product", y);
 		y += 18;
@@ -454,6 +495,8 @@ function App() {
 		if (
 			!selectedProduct ||
 			!selectedCustomer ||
+			!driverName ||
+			!deliveryDate ||
 			quantityValue <= 0 ||
 			!sellPrice.trim() ||
 			!Number.isFinite(Number(sellPrice)) ||
@@ -472,6 +515,8 @@ function App() {
 				.insert({
 					ticket_number: generatedTicketNumber,
 					customer_id: selectedCustomer.id ?? selectedCustomer.customer_id,
+					driver_name: driverName,
+					delivery_date: deliveryDate,
 					location: location.trim(),
 					product_code: selectedProductCode,
 					product_name: selectedProductName || productLabel(selectedProduct, Number(selectedProductIndex)),
@@ -490,6 +535,8 @@ function App() {
 			setFormMessage(`Ticket ${generatedTicketNumber} saved.`);
 			setSelectedProductIndex("");
 			setSelectedCustomerIndex("");
+			setDriverName("");
+			setDeliveryDate(getLocalDateInputValue());
 			setLocation("");
 			setQuantity("");
 			setSellPrice("");
@@ -618,6 +665,8 @@ function App() {
 											<tr>
 												<th>Ticket number</th>
 											<th>Business name</th>
+													<th>Driver name</th>
+													<th>Delivery date</th>
 												<th>Product</th>
 												<th className="numeric-cell">Quantity</th>
 												<th className="numeric-cell">Sell price</th>
@@ -631,6 +680,8 @@ function App() {
 												<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${index}`}>
 													<td className="ticket-number">{ticket.ticket_number ?? "—"}</td>
 													<td>{ticketBusinessName(ticket)}</td>
+													<td>{formatDetail(ticket.driver_name)}</td>
+													<td className="date-cell">{formatDeliveryDate(ticket.delivery_date)}</td>
 													<td className="product-cell">{ticket.product_name ?? "—"}</td>
 													<td className="numeric-cell">
 														{Number(ticket.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}
@@ -746,7 +797,7 @@ function App() {
 									</article>
 									<article className="summary-card date-summary-card">
 										<span className="summary-label">LAST DELIVERY DATE</span>
-										<strong>{customerVisibleTickets[0]?.created_at ? formatDate(customerVisibleTickets[0].created_at) : "—"}</strong>
+										<strong>{customerVisibleTickets[0]?.delivery_date ? formatDeliveryDate(customerVisibleTickets[0].delivery_date) : customerVisibleTickets[0]?.created_at ? formatDate(customerVisibleTickets[0].created_at) : "—"}</strong>
 										<span className="summary-note">Within selected date range</span>
 									</article>
 								</section>
@@ -791,6 +842,7 @@ function App() {
 													<tr>
 														<th>Ticket number</th>
 														<th>Delivery date</th>
+														<th>Driver name</th>
 														<th>Product name</th>
 														<th>Location</th>
 														<th className="numeric-cell">Quantity</th>
@@ -803,7 +855,8 @@ function App() {
 													{customerVisibleTickets.map((ticket, index) => (
 														<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${index}`}>
 															<td className="ticket-number">{ticket.ticket_number ?? "—"}</td>
-															<td className="date-cell">{formatDate(ticket.created_at)}</td>
+																<td className="date-cell">{ticket.delivery_date ? formatDeliveryDate(ticket.delivery_date) : formatDate(ticket.created_at)}</td>
+																<td>{formatDetail(ticket.driver_name)}</td>
 															<td className="product-cell">{ticket.product_name ?? "—"}</td>
 															<td>{ticket.location ?? "—"}</td>
 															<td className="numeric-cell">{Number(ticket.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
@@ -879,6 +932,33 @@ function App() {
 										value={location}
 										onChange={(event) => setLocation(event.target.value)}
 										placeholder="Delivery location"
+									/>
+								</label>
+								<label className="form-field">
+									<span>Driver name</span>
+									<select
+										required
+										value={driverName}
+										onChange={(event) => {
+											setDriverName(event.target.value);
+											setFormMessage("");
+										}}
+										disabled={referencesLoading || driverNames.length === 0}
+									>
+										<option value="">{referencesLoading ? "Loading drivers…" : "Select a driver"}</option>
+										{driverNames.map((name) => <option value={name} key={name}>{name}</option>)}
+									</select>
+								</label>
+								<label className="form-field">
+									<span>Delivery date</span>
+									<input
+										required
+										type="date"
+										value={deliveryDate}
+										onChange={(event) => {
+											setDeliveryDate(event.target.value);
+											setFormMessage("");
+										}}
 									/>
 								</label>
 								<label className="form-field">
@@ -962,11 +1042,14 @@ function App() {
 										{!referencesLoading && products.length === 0 && !referenceError && (
 											<span className="form-error">No products are available to select.</span>
 										)}
+										{!referencesLoading && driverNames.length === 0 && !referenceError && (
+											<span className="form-error">No drivers are available to select.</span>
+										)}
 									</div>
 									<button
 										className="submit-ticket-button"
 										type="submit"
-											disabled={savingTicket || referencesLoading || !selectedProduct || !selectedCustomer || quantityValue <= 0 || !sellPrice.trim() || !Number.isFinite(Number(sellPrice)) || Number(sellPrice) < 0 || !location.trim()}
+											disabled={savingTicket || referencesLoading || !selectedProduct || !selectedCustomer || !driverName || !deliveryDate || quantityValue <= 0 || !sellPrice.trim() || !Number.isFinite(Number(sellPrice)) || Number(sellPrice) < 0 || !location.trim()}
 									>
 										{savingTicket ? "Saving…" : "Save ticket"}
 									</button>
@@ -1037,8 +1120,15 @@ function App() {
 									</div>
 									<div className="ticket-info-field">
 										<span>Business Name</span>
-										<strong>{ticketBusinessName(selectedTicket)}</strong>
 									</div>
+															<div className="ticket-info-field">
+																<span>Driver Name</span>
+																<strong>{formatDetail(selectedTicket.driver_name)}</strong>
+															</div>
+															<div className="ticket-info-field">
+																<span>Delivery Date</span>
+																<strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong>
+															</div>
 									<div className="ticket-info-field full-field">
 										<span>Location</span>
 										<strong>{formatDetail(selectedTicket.location)}</strong>

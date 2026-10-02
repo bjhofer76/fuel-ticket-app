@@ -11,8 +11,11 @@ type TicketLine = {
 	quantity?: number | string | null;
 	sell_price?: number | string | null;
 	extended_amount?: number | string | null;
+	taxable_amount?: number | string | null;
+	sales_tax_amount?: number | string | null;
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
+	sales_tax_treatment?: string | null;
 };
 
 type Ticket = {
@@ -29,6 +32,12 @@ type Ticket = {
 	quantity?: number | string | null;
 	sell_price?: number | string | null;
 	extended_amount?: number | string | null;
+	prompt_pay_discount?: number | string | null;
+	discounted_total?: number | string | null;
+	taxable_subtotal?: number | string | null;
+	sales_tax_total?: number | string | null;
+	invoice_subtotal?: number | string | null;
+	net_amount_due?: number | string | null;
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
 	created_at?: string | null;
@@ -59,11 +68,19 @@ type Driver = {
 	name?: string | null;
 };
 
+type TaxCode = {
+	sales_tax_code?: string | number | null;
+	description?: string | null;
+	tax_rate?: number | string | null;
+	is_taxable?: boolean | null;
+};
+
 type ProductLineDraft = {
 	id: string;
 	productIndex: string;
 	quantity: string;
 	sellPrice: string;
+	salesTaxCodeOverride: string | null;
 };
 
 type DeliveryDateFilter = "all" | "today" | "7days" | "30days" | "year";
@@ -81,13 +98,64 @@ const createProductLineDraft = (): ProductLineDraft => ({
 	productIndex: "",
 	quantity: "",
 	sellPrice: "",
+	salesTaxCodeOverride: null,
 });
+
+const isDyedDieselProduct = (product: Product) => {
+	const productText = [
+		product.product_name,
+		product.name,
+		product.product_code,
+		product.code,
+		product.sku,
+		product.category,
+		product.fuel_type,
+		product.description,
+	]
+		.filter((value): value is string => typeof value === "string")
+		.join(" ");
+	return /\bdyed\b/i.test(productText) && /\bdiesel\b/i.test(productText);
+};
 
 const generateTicketNumber = () =>
 	`TKT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
 
 const ticketLinesFor = (ticket: Ticket): TicketLine[] =>
 	ticket.items?.length ? ticket.items : [ticket];
+
+const ticketTotalGallons = (ticket: Ticket) =>
+	ticketLinesFor(ticket).reduce((total, item) => total + (Number(item.quantity) || 0), 0);
+
+const ticketSubtotal = (ticket: Ticket) =>
+	ticketLinesFor(ticket).reduce((total, item) => total + (Number(item.extended_amount) || 0), 0);
+
+const finiteAmount = (value: unknown): number | undefined => {
+	if (value === null || value === undefined || value === "") return undefined;
+	const amount = Number(value);
+	return Number.isFinite(amount) ? amount : undefined;
+};
+
+const ticketTaxableSubtotal = (ticket: Ticket) =>
+	finiteAmount(ticket.taxable_subtotal) ??
+	ticketLinesFor(ticket).reduce((total, item) => total + (Number(item.taxable_amount) || 0), 0);
+
+const ticketSalesTaxTotal = (ticket: Ticket) =>
+	finiteAmount(ticket.sales_tax_total) ??
+	ticketLinesFor(ticket).reduce((total, item) => total + (Number(item.sales_tax_amount) || 0), 0);
+
+const ticketInvoiceSubtotal = (ticket: Ticket) =>
+	finiteAmount(ticket.invoice_subtotal) ?? ticketSubtotal(ticket);
+
+const ticketPromptPayDiscount = (ticket: Ticket) => {
+	const savedDiscount = ticket.prompt_pay_discount;
+	return savedDiscount !== null && savedDiscount !== undefined && Number.isFinite(Number(savedDiscount))
+		? Number(savedDiscount)
+		: ticketTotalGallons(ticket) * 0.07;
+};
+
+const ticketNetAmountDue = (ticket: Ticket) =>
+	finiteAmount(ticket.net_amount_due) ??
+	ticketInvoiceSubtotal(ticket) + ticketSalesTaxTotal(ticket) - ticketPromptPayDiscount(ticket);
 
 const loadTicketLines = async (tickets: Ticket[]) => {
 	const ticketIds = tickets
@@ -97,27 +165,66 @@ const loadTicketLines = async (tickets: Ticket[]) => {
 		return { tickets: tickets.map((ticket) => ({ ...ticket, items: [ticket] })), error: "" };
 	}
 
-	const { data, error } = await supabase
-		.from("delivery_ticket_items")
-		.select("*")
-		.in("ticket_id", ticketIds);
+	const [itemsResult, taxCodesResult] = await Promise.all([
+		supabase.from("delivery_ticket_items").select("*").in("ticket_id", ticketIds),
+		supabase.from("tax_codes").select("sales_tax_code, description, tax_rate, is_taxable"),
+	]);
+	const taxCodes = (taxCodesResult.data ?? []) as TaxCode[];
+	const taxCodeByCode = new Map(taxCodes.map((taxCode) => [String(taxCode.sales_tax_code ?? "").trim(), taxCode]));
 	const itemsByTicket = new Map<string, TicketLine[]>();
-	for (const item of (data ?? []) as TicketLine[]) {
+	const unconfiguredCodes = new Set<string>();
+	const withTax = (item: TicketLine): TicketLine => {
+		const code = item.sales_tax_code == null ? "" : String(item.sales_tax_code).trim();
+		const taxCode = code ? taxCodeByCode.get(code) : undefined;
+		if (code && !taxCode) unconfiguredCodes.add(code);
+		const taxable = taxCode?.is_taxable === true;
+		const rate = taxCode?.tax_rate == null ? 0 : Number(taxCode.tax_rate);
+		const amount = Number(item.extended_amount) || 0;
+		return {
+			...item,
+			sales_tax_treatment: taxCode?.description?.trim() || code || item.sales_tax_treatment || null,
+			taxable_amount: finiteAmount(item.taxable_amount) ?? (taxable ? amount : 0),
+			sales_tax_amount: finiteAmount(item.sales_tax_amount) ?? (
+				taxable && Number.isFinite(rate) && rate >= 0 && rate <= 1
+					? Math.round((amount * rate + Number.EPSILON) * 100) / 100
+					: 0
+			),
+		};
+	};
+	for (const item of (itemsResult.data ?? []) as TicketLine[]) {
 		if (item.ticket_id === null || item.ticket_id === undefined) continue;
 		const key = String(item.ticket_id);
-		itemsByTicket.set(key, [...(itemsByTicket.get(key) ?? []), item]);
+		itemsByTicket.set(key, [...(itemsByTicket.get(key) ?? []), withTax(item)]);
 	}
 
-	return {
-		tickets: tickets.map((ticket) => ({
+	const loadedTickets = tickets.map((ticket) => {
+		const itemRows = ticket.id === null || ticket.id === undefined
+			? undefined
+			: itemsByTicket.get(String(ticket.id));
+		const items = itemRows?.length ? itemRows : [withTax(ticket)];
+		const totalGallons = items.reduce((total, item) => total + (Number(item.quantity) || 0), 0);
+		const subtotal = items.reduce((total, item) => total + (Number(item.extended_amount) || 0), 0);
+		const taxableSubtotal = finiteAmount(ticket.taxable_subtotal) ??
+			items.reduce((total, item) => total + (Number(item.taxable_amount) || 0), 0);
+		const salesTaxTotal = finiteAmount(ticket.sales_tax_total) ??
+			items.reduce((total, item) => total + (Number(item.sales_tax_amount) || 0), 0);
+		const invoiceSubtotal = finiteAmount(ticket.invoice_subtotal) ?? subtotal;
+		const promptPayDiscount = finiteAmount(ticket.prompt_pay_discount) ?? totalGallons * 0.07;
+		return {
 			...ticket,
-			items: ticket.id === null || ticket.id === undefined
-				? [ticket]
-				: itemsByTicket.get(String(ticket.id))?.length
-					? itemsByTicket.get(String(ticket.id))
-					: [ticket],
-		})),
-		error: error?.message ?? "",
+			items,
+			taxable_subtotal: taxableSubtotal,
+			sales_tax_total: salesTaxTotal,
+			invoice_subtotal: invoiceSubtotal,
+			net_amount_due: finiteAmount(ticket.net_amount_due) ?? invoiceSubtotal + salesTaxTotal - promptPayDiscount,
+		};
+	});
+
+	return {
+		tickets: loadedTickets,
+		error: [itemsResult.error?.message, taxCodesResult.error?.message,
+			unconfiguredCodes.size ? `Unconfigured tax codes: ${[...unconfiguredCodes].join(", ")}` : ""]
+			.filter(Boolean).join("; "),
 	};
 };
 
@@ -125,6 +232,7 @@ function App() {
 	const [path, setPath] = useState(window.location.pathname);
 	const [tickets, setTickets] = useState<Ticket[]>([]);
 	const [products, setProducts] = useState<Product[]>([]);
+	const [taxCodes, setTaxCodes] = useState<TaxCode[]>([]);
 	const [customers, setCustomers] = useState<Customer[]>([]);
 	const [historyCustomers, setHistoryCustomers] = useState<Customer[]>([]);
 	const [customerHistoryTickets, setCustomerHistoryTickets] = useState<Ticket[]>([]);
@@ -189,7 +297,7 @@ function App() {
 				const ticketRows = (ticketResult.data ?? []) as Ticket[];
 				const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines(ticketRows);
 				setLineItemsWarning(lineItemsError
-					? `Product lines could not be loaded (${lineItemsError}). Showing each ticket's saved header product when available.`
+					? `Ticket line or tax details could not be fully loaded (${lineItemsError}). Saved values are shown where available.`
 					: "");
 				setTickets(ticketsWithLines.map((ticket) => {
 					const customer = ticket.customer_id == null
@@ -253,7 +361,7 @@ function App() {
 				const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines((data ?? []) as Ticket[]);
 				if (!active) return;
 				setLineItemsWarning(lineItemsError
-					? `Product lines could not be loaded (${lineItemsError}). Showing each ticket's saved header product when available.`
+					? `Ticket line or tax details could not be fully loaded (${lineItemsError}). Saved values are shown where available.`
 					: "");
 				setCustomerHistoryTickets(ticketsWithLines);
 			}
@@ -272,10 +380,11 @@ function App() {
 		const loadFormOptions = async () => {
 			setReferencesLoading(true);
 			setReferenceError("");
-			const [productsResult, customersResult, driversResult] = await Promise.all([
+			const [productsResult, customersResult, driversResult, taxCodesResult] = await Promise.all([
 				supabase.from("products").select("*"),
 				supabase.from("customers").select("*"),
 				supabase.from("drivers").select("name").order("name", { ascending: true }),
+				supabase.from("tax_codes").select("sales_tax_code, description, tax_rate, is_taxable"),
 			]);
 
 			if (productsResult.error) {
@@ -300,6 +409,13 @@ function App() {
 						.map((driver) => driver.name?.trim())
 						.filter((name): name is string => Boolean(name)))],
 				);
+			}
+			if (taxCodesResult.error) {
+				setReferenceError((current) =>
+					[current, `Tax codes: ${taxCodesResult.error.message}`].filter(Boolean).join(" "),
+				);
+			} else {
+				setTaxCodes((taxCodesResult.data ?? []) as TaxCode[]);
 			}
 			setReferencesLoading(false);
 		};
@@ -393,24 +509,47 @@ function App() {
 	const selectedCustomer = selectedCustomerIndex === ""
 		? null
 		: customers[Number(selectedCustomerIndex)] ?? null;
+	const taxCodeByCode = new Map(taxCodes.map((taxCode) => [String(taxCode.sales_tax_code ?? "").trim(), taxCode]));
 	const preparedProductLines = productLines.map((line) => {
 		const product = line.productIndex === "" ? null : products[Number(line.productIndex)] ?? null;
 		const quantityValue = Number(line.quantity);
 		const sellPriceValue = Number(line.sellPrice);
+		const isDyedDiesel = product ? isDyedDieselProduct(product) : false;
+		const defaultSalesTaxCode = product?.sales_tax_code == null ? "" : String(product.sales_tax_code).trim();
+		const salesTaxCode = isDyedDiesel
+			? line.salesTaxCodeOverride ?? "FARM_EXEMPT"
+			: defaultSalesTaxCode;
+		const taxCode = salesTaxCode ? taxCodeByCode.get(salesTaxCode) : undefined;
+		const taxRate = taxCode?.tax_rate == null ? 0 : Number(taxCode.tax_rate);
+		const taxCodeMissing = Boolean(salesTaxCode) && !taxCode;
+		const taxRateInvalid = Boolean(taxCode?.is_taxable) && (!Number.isFinite(taxRate) || taxRate < 0 || taxRate > 1);
+		const extendedAmount = quantityValue * sellPriceValue;
+		const isTaxable = taxCode?.is_taxable === true;
 		return {
 			...line,
 			product,
 			productCode: String(product?.product_code ?? product?.code ?? product?.sku ?? ""),
 			productName: String(product?.product_name ?? product?.name ?? product?.title ?? ""),
+			isDyedDiesel,
+			salesTaxCode,
+			salesTaxTreatment: taxCode?.description?.trim() || salesTaxCode,
+			taxCode,
+			taxCodeMissing,
 			quantityValue,
 			sellPriceValue,
-			extendedAmount: quantityValue * sellPriceValue,
+			extendedAmount,
+			taxableAmount: isTaxable ? extendedAmount : 0,
+			salesTaxAmount: isTaxable && Number.isFinite(taxRate)
+				? Math.round((extendedAmount * taxRate + Number.EPSILON) * 100) / 100
+				: 0,
 			isValid: Boolean(product) && line.quantity.trim() !== "" &&
 				Number.isFinite(quantityValue) && quantityValue > 0 &&
-				line.sellPrice.trim() !== "" && Number.isFinite(sellPriceValue) && sellPriceValue >= 0,
+				line.sellPrice.trim() !== "" && Number.isFinite(sellPriceValue) && sellPriceValue >= 0 &&
+				!taxCodeMissing && !taxRateInvalid,
 		};
 	});
 	const hasValidProductLines = preparedProductLines.length > 0 && preparedProductLines.every((line) => line.isValid);
+	const unconfiguredTaxCodes = [...new Set(preparedProductLines.filter((line) => line.taxCodeMissing).map((line) => line.salesTaxCode))];
 	const draftTotalGallons = preparedProductLines.reduce(
 		(total, line) => total + (Number.isFinite(line.quantityValue) && line.quantityValue > 0 ? line.quantityValue : 0),
 		0,
@@ -419,6 +558,17 @@ function App() {
 		(total, line) => total + (Number.isFinite(line.extendedAmount) && line.extendedAmount > 0 ? line.extendedAmount : 0),
 		0,
 	);
+	const draftTaxableSubtotal = preparedProductLines.reduce(
+		(total, line) => total + line.taxableAmount,
+		0,
+	);
+	const draftSalesTaxTotal = preparedProductLines.reduce(
+		(total, line) => total + line.salesTaxAmount,
+		0,
+	);
+	const draftInvoiceSubtotal = draftGrandTotal;
+	const draftPromptPayDiscount = draftTotalGallons * 0.07;
+	const draftNetAmountDue = draftInvoiceSubtotal + draftSalesTaxTotal - draftPromptPayDiscount;
 
 	const formatCurrency = (value: unknown) =>
 		new Intl.NumberFormat("en-US", {
@@ -554,35 +704,42 @@ function App() {
 			const priceBottom = drawField("Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
 			const amountBottom = drawField("Line amount", formatCurrency(item.extended_amount), margin + (itemColumnWidth + itemGap) * 2, y, itemColumnWidth);
 			y = Math.max(quantityBottom, priceBottom, amountBottom) + 8;
+			const taxableBottom = drawField("Taxable amount", formatCurrency(item.taxable_amount), margin, y, columnWidth);
+			const salesTaxAmountBottom = drawField("Sales tax", formatCurrency(item.sales_tax_amount), margin + columnWidth + columnGap, y, columnWidth);
+			y = Math.max(taxableBottom, salesTaxAmountBottom) + 8;
 			const exciseBottom = drawField("Excise tax code", formatDetail(item.excise_tax_code ?? ticket.excise_tax_code), margin, y, columnWidth);
-			const salesTaxBottom = drawField("Sales tax code", formatDetail(item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
-			y = Math.max(exciseBottom, salesTaxBottom) + 14;
+			const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
+			y = Math.max(exciseBottom, taxTreatmentBottom) + 14;
 		}
 
 		const statGap = 10;
 		const statWidth = (contentWidth - statGap * 2) / 3;
-		const statHeight = 76;
-		ensurePdfSpace(statHeight + 70);
+		const statHeight = 66;
+		ensurePdfSpace((statHeight + statGap) * 2 + 20);
 		const stats = [
 			["TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
-			["PRODUCT LINES", String(ticketItems.length)],
-			["TOTAL AMOUNT", formatCurrency(ticketItems.reduce((total, item) => total + (Number(item.extended_amount) || 0), 0))],
+			["TAXABLE SUBTOTAL", formatCurrency(ticketTaxableSubtotal(ticket))],
+			["SALES TAX", formatCurrency(ticketSalesTaxTotal(ticket))],
+			["INVOICE SUBTOTAL", formatCurrency(ticketInvoiceSubtotal(ticket))],
+			["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))],
+			["NET AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))],
 		];
 		stats.forEach(([label, value], index) => {
-			const x = margin + index * (statWidth + statGap);
-			pdf.setFillColor(index === 2 ? 235 : 243, index === 2 ? 245 : 248, index === 2 ? 238 : 244);
-			pdf.roundedRect(x, y, statWidth, statHeight, 4, 4, "F");
+			const x = margin + (index % 3) * (statWidth + statGap);
+			const yOffset = Math.floor(index / 3) * (statHeight + statGap);
+			pdf.setFillColor(index === 5 ? 235 : 243, index === 5 ? 245 : 248, index === 5 ? 238 : 244);
+			pdf.roundedRect(x, y + yOffset, statWidth, statHeight, 4, 4, "F");
 			pdf.setFont("helvetica", "bold");
 			pdf.setFontSize(8);
 			pdf.setTextColor(101, 124, 111);
-			pdf.text(label, x + 12, y + 21);
-			pdf.setFontSize(index === 2 ? 15 : 14);
-			pdf.setTextColor(index === 2 ? 29 : 35, index === 2 ? 105 : 67, index === 2 ? 72 : 53);
-			pdf.text(value, x + 12, y + 49);
+			pdf.text(label, x + 12, y + yOffset + 19);
+			pdf.setFontSize(index === 5 ? 13 : 12);
+			pdf.setTextColor(index === 5 ? 29 : 35, index === 5 ? 105 : 67, index === 5 ? 72 : 53);
+			pdf.text(value, x + 12, y + yOffset + 46);
 		});
-		y += statHeight + 29;
+		y += (statHeight + statGap) * 2 + 20;
 
-		ensurePdfSpace(48);
+		ensurePdfSpace(58);
 		y += 8;
 		pdf.setDrawColor(222, 231, 225);
 		pdf.line(margin, y, pageWidth - margin, y);
@@ -590,6 +747,8 @@ function App() {
 		pdf.setFontSize(8);
 		pdf.setTextColor(119, 135, 126);
 		pdf.text("FUEL DESK  |  DELIVERY RECORD", margin, y + 18);
+		pdf.setTextColor(56, 82, 69);
+		pdf.text("Less 7¢ per gallon if paid within 10 days.", margin, y + 34);
 		const filename = String(ticket.ticket_number ?? "delivery-ticket").replace(/[^a-z0-9_-]/gi, "-");
 		pdf.save(`${filename}.pdf`);
 	};
@@ -608,6 +767,9 @@ function App() {
 		setFormMessage("");
 		const generatedTicketNumber = generateTicketNumber();
 		const firstLine = preparedProductLines[0];
+		const promptPayDiscount = draftTotalGallons * 0.07;
+		const discountedTotal = draftGrandTotal - promptPayDiscount;
+		const netAmountDue = draftInvoiceSubtotal + draftSalesTaxTotal - promptPayDiscount;
 
 		try {
 			const { data: insertedTicket, error: insertError } = await supabase
@@ -621,10 +783,16 @@ function App() {
 					product_code: firstLine.productCode,
 					product_name: firstLine.productName || productLabel(firstLine.product!, Number(firstLine.productIndex)),
 					excise_tax_code: firstLine.product?.excise_tax_code,
-					sales_tax_code: firstLine.product?.sales_tax_code,
+					sales_tax_code: firstLine.salesTaxCode,
 					quantity: draftTotalGallons,
 					sell_price: firstLine.sellPriceValue,
 					extended_amount: draftGrandTotal,
+					taxable_subtotal: draftTaxableSubtotal,
+					sales_tax_total: draftSalesTaxTotal,
+					invoice_subtotal: draftInvoiceSubtotal,
+					prompt_pay_discount: promptPayDiscount,
+					discounted_total: discountedTotal,
+					net_amount_due: netAmountDue,
 				})
 				.select("id")
 				.single();
@@ -645,8 +813,10 @@ function App() {
 				quantity: line.quantityValue,
 				sell_price: line.sellPriceValue,
 				extended_amount: line.extendedAmount,
+				taxable_amount: line.taxableAmount,
+				sales_tax_amount: line.salesTaxAmount,
 				excise_tax_code: line.product?.excise_tax_code,
-				sales_tax_code: line.product?.sales_tax_code,
+				sales_tax_code: line.salesTaxCode,
 			}));
 			const { error: lineItemsError } = await supabase
 				.from("delivery_ticket_items")
@@ -792,9 +962,15 @@ function App() {
 													<th>Driver name</th>
 													<th>Delivery date</th>
 												<th>Product</th>
+												<th>Tax treatment</th>
 												<th className="numeric-cell">Quantity</th>
 												<th className="numeric-cell">Sell price</th>
 												<th className="numeric-cell">Extended amount</th>
+											<th className="numeric-cell">Taxable subtotal</th>
+											<th className="numeric-cell">Sales tax</th>
+											<th className="numeric-cell">Invoice subtotal</th>
+												<th className="numeric-cell">Prompt Pay Discount</th>
+												<th className="numeric-cell">Net amount due</th>
 												<th>Created</th>
 												<th><span className="sr-only">Actions</span></th>
 											</tr>
@@ -809,9 +985,15 @@ function App() {
 													{itemIndex === 0 && <td rowSpan={lines.length}>{formatDetail(ticket.driver_name)}</td>}
 													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDeliveryDate(ticket.delivery_date)}</td>}
 													<td className="product-cell">{item.product_name ?? "—"}</td>
+													<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
 													<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
 													<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
 													<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
+													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketTaxableSubtotal(ticket))}</td>}
+													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketSalesTaxTotal(ticket))}</td>}
+													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketInvoiceSubtotal(ticket))}</td>}
+													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
+													{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketNetAmountDue(ticket))}</td>}
 													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDate(ticket.created_at)}</td>}
 													{itemIndex === 0 && (
 														<td rowSpan={lines.length}>
@@ -965,38 +1147,46 @@ function App() {
 														<th>Delivery date</th>
 														<th>Driver name</th>
 														<th>Product name</th>
+														<th>Tax treatment</th>
 														<th>Location</th>
 														<th className="numeric-cell">Quantity</th>
 														<th className="numeric-cell">Sell price</th>
 														<th className="numeric-cell">Extended amount</th>
+														<th className="numeric-cell">Taxable subtotal</th>
+														<th className="numeric-cell">Sales tax</th>
+														<th className="numeric-cell">Invoice subtotal</th>
+														<th className="numeric-cell">Prompt Pay Discount</th>
+														<th className="numeric-cell">Net amount due</th>
 														<th><span className="sr-only">Actions</span></th>
 													</tr>
 												</thead>
 												<tbody>
-													{customerVisibleTickets.map((ticket, index) => (
-														<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${index}`}>
-															<td className="ticket-number">{ticket.ticket_number ?? "—"}</td>
-																<td className="date-cell">{ticket.delivery_date ? formatDeliveryDate(ticket.delivery_date) : formatDate(ticket.created_at)}</td>
-																<td>{formatDetail(ticket.driver_name)}</td>
-															<td className="product-cell">{ticket.product_name ?? "—"}</td>
-															<td>{ticket.location ?? "—"}</td>
-															<td className="numeric-cell">{Number(ticket.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
-															<td className="numeric-cell">{formatFourDecimalPrice(ticket.sell_price)}</td>
-															<td className="numeric-cell amount-cell">{formatCurrency(ticket.extended_amount)}</td>
-															<td>
-																<button
-																className="view-button"
-																type="button"
-																onClick={() => setSelectedTicket({
-																		...ticket,
-																		business_name: selectedHistoryCustomer.business_name,
-																	})}
-																>
-																	View
-																</button>
-															</td>
-														</tr>
-													))}
+													{customerVisibleTickets.flatMap((ticket, index) => {
+														const lines = ticketLinesFor(ticket);
+														return lines.map((item, itemIndex) => (
+															<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${item.id ?? itemIndex}`}>
+																{itemIndex === 0 && <td className="ticket-number" rowSpan={lines.length}>{ticket.ticket_number ?? "—"}</td>}
+																{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{ticket.delivery_date ? formatDeliveryDate(ticket.delivery_date) : formatDate(ticket.created_at)}</td>}
+																{itemIndex === 0 && <td rowSpan={lines.length}>{formatDetail(ticket.driver_name)}</td>}
+																<td className="product-cell">{item.product_name ?? "—"}</td>
+																<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
+																<td>{ticket.location ?? "—"}</td>
+																<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+																<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
+																<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
+																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketTaxableSubtotal(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketSalesTaxTotal(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketInvoiceSubtotal(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketNetAmountDue(ticket))}</td>}
+																{itemIndex === 0 && (
+																	<td rowSpan={lines.length}>
+																		<button className="view-button" type="button" onClick={() => setSelectedTicket({ ...ticket, business_name: selectedHistoryCustomer.business_name })}>View</button>
+																	</td>
+																)}
+															</tr>
+														));
+													})}
 												</tbody>
 											</table>
 											<div className="table-footer">Showing {customerVisibleTickets.length} deliveries</div>
@@ -1095,7 +1285,7 @@ function App() {
 									</div>
 									<div className="product-lines-list">
 										{preparedProductLines.map((line, index) => (
-											<div className="product-line-row" key={line.id}>
+											<div className={line.isDyedDiesel ? "product-line-row tax-treatment-row" : "product-line-row"} key={line.id}>
 												<label className="form-field product-line-product">
 													<span>Product {index + 1}</span>
 													<select
@@ -1103,11 +1293,13 @@ function App() {
 														value={line.productIndex}
 														onChange={(event) => {
 															const productIndex = event.target.value;
+																const product = productIndex === "" ? null : products[Number(productIndex)] ?? null;
 															setProductLines((current) => current.map((draft) => draft.id === line.id
 																? {
 																	...draft,
 																	productIndex,
 																	sellPrice: productIndex === "" ? "" : String(products[Number(productIndex)]?.sell_price ?? ""),
+																		salesTaxCodeOverride: product && isDyedDieselProduct(product) ? "FARM_EXEMPT" : null,
 																}
 																: draft));
 															setFormMessage("");
@@ -1122,6 +1314,25 @@ function App() {
 														))}
 													</select>
 												</label>
+												{line.isDyedDiesel && (
+													<label className="form-field product-tax-treatment">
+														<span>Tax Treatment</span>
+														<select
+															required
+															value={line.salesTaxCode}
+															onChange={(event) => {
+																const salesTaxCodeOverride = event.target.value;
+																setProductLines((current) => current.map((draft) => draft.id === line.id ? { ...draft, salesTaxCodeOverride } : draft));
+																setFormMessage("");
+															}}
+															disabled={referencesLoading}
+														>
+															<option value="FARM_EXEMPT">FARM_EXEMPT</option>
+															<option value="SD_STATE">SD_STATE</option>
+															<option value="EXEMPT">EXEMPT</option>
+														</select>
+													</label>
+												)}
 												<label className="form-field">
 													<span>Quantity (gallons)</span>
 													<input
@@ -1158,6 +1369,10 @@ function App() {
 													<span>Extended amount</span>
 													<input readOnly value={line.isValid ? formatCurrency(line.extendedAmount) : ""} placeholder="Calculated automatically" />
 												</label>
+												<label className="form-field calculated-field amount-field">
+													<span>Sales tax</span>
+													<input readOnly value={line.isValid ? formatCurrency(line.salesTaxAmount) : ""} placeholder={line.taxCodeMissing ? "Tax code not configured" : "Calculated automatically"} />
+												</label>
 												<button
 													className="remove-product-button"
 													type="button"
@@ -1171,9 +1386,18 @@ function App() {
 									</div>
 									<div className="product-lines-total">
 										<span>Total gallons <strong>{draftTotalGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong></span>
-										<span>Grand total <strong>{formatCurrency(draftGrandTotal)}</strong></span>
+										<span>Taxable subtotal <strong>{formatCurrency(draftTaxableSubtotal)}</strong></span>
+										<span>Sales tax <strong>{formatCurrency(draftSalesTaxTotal)}</strong></span>
+										<span>Invoice subtotal <strong>{formatCurrency(draftInvoiceSubtotal)}</strong></span>
+										<span>Prompt Pay Discount (7¢/gal if paid within 10 days) <strong>{formatCurrency(draftPromptPayDiscount)}</strong></span>
+										<span>Net amount due <strong>{formatCurrency(draftNetAmountDue)}</strong></span>
 									</div>
 								</div>
+								{unconfiguredTaxCodes.length > 0 && (
+									<p className="reference-error" role="alert">
+										Configure tax code{unconfiguredTaxCodes.length === 1 ? "" : "s"} {unconfiguredTaxCodes.join(", ")} in the tax_codes table before saving.
+									</p>
+								)}
 								<div className="ticket-form-footer">
 									<div className="form-feedback" aria-live="polite">
 										{formError && <span className="form-error" role="alert">{formError}</span>}
@@ -1310,6 +1534,14 @@ function App() {
 														<span>Line amount</span>
 														<strong>{formatCurrency(item.extended_amount)}</strong>
 													</div>
+															<div className="ticket-info-field">
+																<span>Taxable amount</span>
+																<strong>{formatCurrency(item.taxable_amount)}</strong>
+															</div>
+															<div className="ticket-info-field">
+																<span>Sales tax</span>
+																<strong>{formatCurrency(item.sales_tax_amount)}</strong>
+															</div>
 												</div>
 												<div className="ticket-line-details ticket-line-tax-details">
 													<div className="ticket-info-field">
@@ -1317,8 +1549,8 @@ function App() {
 														<strong>{formatDetail(item.excise_tax_code ?? selectedTicket.excise_tax_code)}</strong>
 													</div>
 													<div className="ticket-info-field">
-														<span>Sales Tax Code</span>
-														<strong>{formatDetail(item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
+																<span>Tax Treatment</span>
+																<strong>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
 													</div>
 												</div>
 											</article>
@@ -1332,16 +1564,29 @@ function App() {
 										<strong>{ticketLinesFor(selectedTicket).reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
 									</div>
 									<div className="ticket-metric">
-										<span>Product lines</span>
-										<strong>{ticketLinesFor(selectedTicket).length}</strong>
+										<span>Taxable subtotal</span>
+										<strong>{formatCurrency(ticketTaxableSubtotal(selectedTicket))}</strong>
+									</div>
+									<div className="ticket-metric">
+										<span>Sales tax</span>
+										<strong>{formatCurrency(ticketSalesTaxTotal(selectedTicket))}</strong>
+									</div>
+									<div className="ticket-metric">
+										<span>Invoice subtotal</span>
+										<strong>{formatCurrency(ticketInvoiceSubtotal(selectedTicket))}</strong>
+									</div>
+									<div className="ticket-metric">
+										<span>Prompt Pay Discount</span>
+										<strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong>
 									</div>
 									<div className="ticket-metric total-metric">
-										<span>Grand total</span>
-										<strong>{formatCurrency(ticketLinesFor(selectedTicket).reduce((total, item) => total + (Number(item.extended_amount) || 0), 0))}</strong>
+										<span>Net amount due</span>
+										<strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong>
 									</div>
 								</section>
 
 								<section className="ticket-tax-grid" aria-label="Tax codes">
+									<p className="ticket-payment-terms">Less 7¢ per gallon if paid within 10 days.</p>
 									<div className="ticket-info-field">
 										<span>Created Date</span>
 										<strong>{formatDate(selectedTicket.created_at)}</strong>

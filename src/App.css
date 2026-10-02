@@ -513,22 +513,38 @@ a {
   min-width: 0;
   padding: 12px;
   display: grid;
-  grid-template-columns: minmax(150px, 1.45fr) repeat(3, minmax(110px, 1fr)) auto;
+  grid-template-columns: minmax(150px, 1.45fr) repeat(4, minmax(110px, 1fr)) auto;
   align-items: end;
   gap: 12px;
   border: 1px solid #e7ece8;
   background: #fff;
 }
 
+.product-line-row.tax-treatment-row {
+  grid-template-columns: minmax(150px, 1.35fr) repeat(5, minmax(95px, 1fr)) auto;
+}
+
 .product-lines-total {
   margin-top: 12px;
   padding-top: 12px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 24px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  justify-content: end;
+  gap: 10px 24px;
   border-top: 1px solid #e3e9e4;
   color: #718078;
   font-size: 11px;
+}
+
+.product-lines-total span:nth-child(3),
+.product-lines-total span:last-child {
+  grid-column: 1 / -1;
+  justify-self: end;
+}
+
+.product-lines-total span:last-child {
+  padding-top: 8px;
+  border-top: 1px solid #e3e9e4;
 }
 
 .product-lines-total strong {
@@ -1127,7 +1143,7 @@ tbody tr:hover {
 .ticket-metrics {
   margin-top: 20px;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1168,6 +1184,13 @@ tbody tr:hover {
 .ticket-metric.total-metric > strong {
   color: #176443;
   font-size: 28px;
+}
+
+.ticket-payment-terms {
+  grid-column: 1 / -1;
+  color: #596f63;
+  font-size: 11px;
+  font-style: italic;
 }
 
 .ticket-tax-grid {
@@ -1350,6 +1373,10 @@ tbody tr:hover {
     gap: 10px;
   }
 
+  .ticket-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .customer-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1480,6 +1507,10 @@ tbody tr:hover {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .product-line-row.tax-treatment-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .product-line-product {
     grid-column: 1 / -1;
   }
@@ -1501,6 +1532,10 @@ tbody tr:hover {
     gap: 12px;
   }
 
+  .product-line-row.tax-treatment-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .product-line-product {
     grid-column: auto;
   }
@@ -1510,8 +1545,17 @@ tbody tr:hover {
   }
 
   .product-lines-total {
-    justify-content: space-between;
+    grid-template-columns: minmax(0, 1fr);
     gap: 8px;
+  }
+
+  .product-lines-total span,
+  .product-lines-total span:nth-child(3),
+  .product-lines-total span:last-child {
+    grid-column: auto;
+    justify-self: stretch;
+    display: flex;
+    justify-content: space-between;
   }
 
   .ticket-line-title,

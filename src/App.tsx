@@ -52,6 +52,7 @@ type Product = {
 	code?: string | null;
 	sku?: string | null;
 	sell_price?: number | string | null;
+	current_price?: number | string | null;
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
 	[key: string]: unknown;
@@ -232,6 +233,12 @@ function App() {
 	const [path, setPath] = useState(window.location.pathname);
 	const [tickets, setTickets] = useState<Ticket[]>([]);
 	const [products, setProducts] = useState<Product[]>([]);
+	const [pricingProducts, setPricingProducts] = useState<Product[]>([]);
+	const [pricingDraftPrices, setPricingDraftPrices] = useState<Record<number, string>>({});
+	const [pricingLoading, setPricingLoading] = useState(false);
+	const [savingPriceIndex, setSavingPriceIndex] = useState<number | null>(null);
+	const [pricingError, setPricingError] = useState("");
+	const [pricingMessage, setPricingMessage] = useState("");
 	const [taxCodes, setTaxCodes] = useState<TaxCode[]>([]);
 	const [customers, setCustomers] = useState<Customer[]>([]);
 	const [historyCustomers, setHistoryCustomers] = useState<Customer[]>([]);
@@ -262,6 +269,7 @@ function App() {
 	const isHistoryPage = path === "/ticket-history";
 	const isCustomerHistoryPage = path === "/customer-history";
 	const isCreateTicketPage = path === "/create-ticket";
+	const isAdminPricingPage = path === "/admin/pricing";
 
 	useEffect(() => {
 		const updatePath = () => setPath(window.location.pathname);
@@ -424,6 +432,46 @@ function App() {
 	}, [isCreateTicketPage]);
 
 	useEffect(() => {
+		if (!isAdminPricingPage) return;
+
+		let active = true;
+		const loadProducts = async () => {
+			setPricingLoading(true);
+			setPricingError("");
+			setPricingMessage("");
+			try {
+				const { data, error: loadError } = await supabase.from("products").select("*");
+				if (!active) return;
+				if (loadError) {
+					setPricingError(loadError.message);
+					return;
+				}
+				const loadedProducts = (data ?? []) as Product[];
+				setPricingProducts(loadedProducts);
+				setPricingDraftPrices(Object.fromEntries(
+					loadedProducts.map((product, index) => [
+						index,
+						product.current_price == null || !Number.isFinite(Number(product.current_price))
+							? ""
+							: Number(product.current_price).toFixed(4),
+					]),
+				));
+			} catch (loadError) {
+				if (active) {
+					setPricingError(loadError instanceof Error ? loadError.message : "Unable to load products.");
+				}
+			} finally {
+				if (active) setPricingLoading(false);
+			}
+		};
+
+		void loadProducts();
+		return () => {
+			active = false;
+		};
+	}, [isAdminPricingPage]);
+
+	useEffect(() => {
 		if (!selectedTicket) return;
 		const closeOnEscape = (event: KeyboardEvent) => {
 			if (event.key === "Escape") setSelectedTicket(null);
@@ -444,6 +492,123 @@ function App() {
 		const destination = event.currentTarget.pathname;
 		window.history.pushState({}, "", destination);
 		setPath(destination);
+	};
+
+	const saveProductPrice = async (product: Product, index: number) => {
+		const priceText = pricingDraftPrices[index] ?? "";
+		if (!/^(?:\d+(?:\.\d{1,4})?|\.\d{1,4})$/.test(priceText)) {
+			setPricingError("Enter a price with no more than four decimal places.");
+			setPricingMessage("");
+			return;
+		}
+		const price = Number(priceText);
+		if (!Number.isFinite(price) || price < 0) {
+			setPricingError("Enter a valid price greater than or equal to zero.");
+			setPricingMessage("");
+			return;
+		}
+		const productName = String(product.product_name ?? product.name ?? product.title ?? `Product ${index + 1}`);
+		const formattedPrice = price.toFixed(4);
+		if (!window.confirm(`Save ${productName} current price as $${formattedPrice}?`)) return;
+
+		if (product.id === null || product.id === undefined) {
+			setPricingError(`Unable to save ${productName}: no product ID is available.`);
+			setPricingMessage("");
+			return;
+		}
+
+		const numericPrice = Number(formattedPrice);
+		setSavingPriceIndex(index);
+		setPricingError("");
+		setPricingMessage("");
+		try {
+			const { data: updatedProduct, error: saveError } = await supabase
+				.from("products")
+				.update({ current_price: numericPrice })
+				.eq("id", product.id)
+				.select("id, product_code, product_name, current_price")
+				.single();
+			if (saveError) {
+				setPricingError(saveError.code === "PGRST116"
+					? "No matching product was updated. Check the products UPDATE policy."
+					: saveError.message);
+				return;
+			}
+			if (!updatedProduct) {
+				setPricingError("No matching product was updated. Check the products UPDATE policy.");
+				return;
+			}
+			const savedPrice = updatedProduct.current_price;
+			if (
+				savedPrice === null ||
+				savedPrice === undefined ||
+				!Number.isFinite(Number(savedPrice)) ||
+				Number(savedPrice) !== numericPrice
+			) {
+				setPricingError(
+					`Unable to verify ${productName} price. Expected ${formattedPrice}, received ${savedPrice ?? "NULL"}.`,
+				);
+				return;
+			}
+			setPricingProducts((current) => current.map((item, itemIndex) =>
+				itemIndex === index ? updatedProduct : item,
+			));
+			setPricingDraftPrices((current) => ({
+				...current,
+				[index]: Number(savedPrice).toFixed(4),
+			}));
+			setPricingMessage(`${productName} price saved.`);
+		} catch (saveError) {
+			setPricingError(saveError instanceof Error ? saveError.message : `Unable to save ${productName}.`);
+		} finally {
+			setSavingPriceIndex(null);
+		}
+	};
+
+	const refreshProductCurrentPrice = async (
+		product: Product,
+		productIndex: string,
+		lineId: string,
+		initialSellPrice: string,
+	) => {
+		if (product.id === null || product.id === undefined) return;
+		try {
+			const { data, error: priceError } = await supabase
+				.from("products")
+				.select("current_price")
+				.eq("id", product.id)
+				.single();
+			if (priceError) {
+				setReferenceError((current) =>
+					[current, `Current price for ${productLabel(product, Number(productIndex))} could not be refreshed: ${priceError.message}`]
+						.filter(Boolean).join(" "),
+				);
+				return;
+			}
+			if (data.current_price === null || data.current_price === undefined) {
+				setReferenceError((current) =>
+					[current, `No current price is configured for ${productLabel(product, Number(productIndex))}.`]
+						.filter(Boolean).join(" "),
+				);
+				return;
+			}
+			const currentPrice = String(data.current_price);
+			setProducts((current) => current.map((item, index) =>
+				index === Number(productIndex) ? { ...item, current_price: data.current_price } : item,
+			));
+			setProductLines((current) => current.map((draft) =>
+				draft.id === lineId &&
+				draft.productIndex === productIndex &&
+				draft.sellPrice === initialSellPrice
+					? { ...draft, sellPrice: currentPrice }
+					: draft,
+			));
+		} catch (priceError) {
+			setReferenceError((current) =>
+				[current, `Current price for ${productLabel(product, Number(productIndex))} could not be refreshed: ${priceError instanceof Error ? priceError.message : "Unknown error."}`]
+					.filter(Boolean).join(" "),
+			);
+		}
 	};
 
 	const normalizedSearch = search.trim().toLowerCase();
@@ -510,6 +675,11 @@ function App() {
 		? null
 		: customers[Number(selectedCustomerIndex)] ?? null;
 	const taxCodeByCode = new Map(taxCodes.map((taxCode) => [String(taxCode.sales_tax_code ?? "").trim(), taxCode]));
+	const dyedDieselTaxCodes = ["FARM_EXEMPT", "SD_STATE", "YANKTON_CITY", "EXEMPT"]
+		.flatMap((code) => {
+			const taxCode = taxCodeByCode.get(code);
+			return taxCode ? [taxCode] : [];
+		});
 	const preparedProductLines = productLines.map((line) => {
 		const product = line.productIndex === "" ? null : products[Number(line.productIndex)] ?? null;
 		const quantityValue = Number(line.quantity);
@@ -869,6 +1039,13 @@ function App() {
 					>
 						Customer History
 					</a>
+					<a
+						href="/admin/pricing"
+						onClick={navigate}
+						className={isAdminPricingPage ? "nav-link active" : "nav-link"}
+					>
+						Admin Pricing
+					</a>
 				</nav>
 				<span className="topbar-label">DELIVERY OPERATIONS</span>
 			</header>
@@ -1201,6 +1378,75 @@ function App() {
 							</div>
 						)}
 					</>
+				) : isAdminPricingPage ? (
+					<>
+						<div className="page-heading">
+							<div>
+								<p className="eyebrow">ADMINISTRATION / PRODUCTS</p>
+								<h1>Admin Product Pricing</h1>
+								<p className="heading-description">Review and update current product prices.</p>
+							</div>
+						</div>
+						<section className="ticket-section pricing-section">
+							<div className="table-scroll">
+								<table className="pricing-table">
+									<thead>
+										<tr>
+											<th>Product Name</th>
+											<th>Product Code</th>
+											<th>Current Price</th>
+											<th><span className="sr-only">Actions</span></th>
+										</tr>
+									</thead>
+									<tbody>
+										{pricingProducts.map((product, index) => {
+											const priceText = pricingDraftPrices[index] ?? "";
+											const currentPrice = product.current_price == null ? "" : Number(product.current_price).toFixed(4);
+											return (
+												<tr key={String(product.id ?? product.product_code ?? index)}>
+													<td className="product-cell">{String(product.product_name ?? product.name ?? product.title ?? `Product ${index + 1}`)}</td>
+													<td>{String(product.product_code ?? product.code ?? product.sku ?? "—")}</td>
+													<td>
+														<label className="pricing-input-label">
+															<span className="sr-only">Current Price for {String(product.product_name ?? product.name ?? `Product ${index + 1}`)}</span>
+															<input
+																type="number"
+																min="0"
+																step="0.0001"
+																value={priceText}
+																placeholder={currentPrice || "0.0000"}
+																onChange={(event) => {
+																	setPricingDraftPrices((current) => ({ ...current, [index]: event.target.value }));
+																	setPricingError("");
+																	setPricingMessage("");
+																}}
+															/>
+														</label>
+													</td>
+													<td>
+														<button
+															className="view-button"
+															type="button"
+															disabled={savingPriceIndex !== null || priceText === currentPrice}
+															onClick={() => void saveProductPrice(product, index)}
+														>
+															{savingPriceIndex === index ? "Saving…" : "Save"}
+														</button>
+													</td>
+												</tr>
+											);
+										})}
+									</tbody>
+								</table>
+							</div>
+							<div className="pricing-feedback" aria-live="polite">
+								{pricingLoading && <span>Loading products…</span>}
+								{!pricingLoading && pricingProducts.length === 0 && !pricingError && <span>No products are available.</span>}
+								{pricingError && <span className="form-error" role="alert">{pricingError}</span>}
+								{pricingMessage && <span className="form-success" role="status">{pricingMessage}</span>}
+							</div>
+						</section>
+					</>
 				) : isCreateTicketPage ? (
 					<>
 						<div className="page-heading">
@@ -1293,15 +1539,19 @@ function App() {
 														value={line.productIndex}
 														onChange={(event) => {
 															const productIndex = event.target.value;
-																const product = productIndex === "" ? null : products[Number(productIndex)] ?? null;
+															const product = productIndex === "" ? null : products[Number(productIndex)] ?? null;
+															const initialSellPrice = product?.current_price == null ? "" : String(product.current_price);
 															setProductLines((current) => current.map((draft) => draft.id === line.id
 																? {
 																	...draft,
 																	productIndex,
-																	sellPrice: productIndex === "" ? "" : String(products[Number(productIndex)]?.sell_price ?? ""),
-																		salesTaxCodeOverride: product && isDyedDieselProduct(product) ? "FARM_EXEMPT" : null,
+																	sellPrice: initialSellPrice,
+																	salesTaxCodeOverride: product && isDyedDieselProduct(product) ? "FARM_EXEMPT" : null,
 																}
 																: draft));
+															if (product) {
+																void refreshProductCurrentPrice(product, productIndex, line.id, initialSellPrice);
+															}
 															setFormMessage("");
 														}}
 														disabled={referencesLoading || products.length === 0}
@@ -1327,9 +1577,11 @@ function App() {
 															}}
 															disabled={referencesLoading}
 														>
-															<option value="FARM_EXEMPT">FARM_EXEMPT</option>
-															<option value="SD_STATE">SD_STATE</option>
-															<option value="EXEMPT">EXEMPT</option>
+															{dyedDieselTaxCodes
+																.map((taxCode) => {
+																	const code = String(taxCode.sales_tax_code ?? "").trim();
+																	return <option value={code} key={code}>{code}</option>;
+																})}
 														</select>
 													</label>
 												)}

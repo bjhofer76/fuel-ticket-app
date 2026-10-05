@@ -367,6 +367,46 @@ a {
   min-width: 1120px;
 }
 
+.pricing-section {
+  width: 100%;
+}
+
+.pricing-table {
+  min-width: 680px;
+}
+
+.pricing-input-label {
+  display: block;
+  width: 150px;
+}
+
+.pricing-input-label input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 36px;
+  padding: 0 9px;
+  border: 1px solid #dce4df;
+  background: #fbfcfb;
+  color: #293d38;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.pricing-input-label input:focus {
+  border-color: #6caa8c;
+  outline: 0;
+  box-shadow: 0 0 0 2px #e8f3ec;
+}
+
+.pricing-feedback {
+  min-height: 42px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  color: #65766f;
+  font-size: 12px;
+}
+
 .summary-card {
   min-height: 132px;
   padding: 20px 22px 17px;

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { companyCityLine, companyInfo } from "./lib/company-settings";
+import gerstnerOilLogoUrl from "./assets/gerstner-oil-logo.png";
+import gerstnerOilLogoSvgUrl from "./assets/gerstner-oil-logo.svg";
 import "./App.css";
 
 type TicketLine = {
@@ -106,6 +108,45 @@ const getLocalDateInputValue = () => {
 	return `${year}-${month}-${day}`;
 };
 
+const firstTicketNumber = 100000;
+const ticketNumberPageSize = 1000;
+
+const fetchNextTicketNumber = async () => {
+	let nextOffset = 0;
+	let highestTicketNumber = firstTicketNumber - 1;
+
+	while (true) {
+		const { data, error: queryError } = await supabase
+			.from("delivery_tickets")
+			.select("ticket_number")
+			.order("id", { ascending: true })
+			.range(nextOffset, nextOffset + ticketNumberPageSize - 1);
+		if (queryError) throw new Error(`Unable to load ticket numbers: ${queryError.message}`);
+
+		const rows = (data ?? []) as Array<{ ticket_number?: string | number | null }>;
+		for (const row of rows) {
+			const ticketNumber = row.ticket_number;
+			const normalizedNumber = typeof ticketNumber === "string" ? ticketNumber.trim() : ticketNumber;
+			if (
+				(typeof normalizedNumber !== "string" && typeof normalizedNumber !== "number") ||
+				(typeof normalizedNumber === "string" && !/^\d+$/.test(normalizedNumber))
+			) continue;
+			const numericTicketNumber = Number(normalizedNumber);
+			if (Number.isSafeInteger(numericTicketNumber) && numericTicketNumber > highestTicketNumber) {
+				highestTicketNumber = numericTicketNumber;
+			}
+		}
+
+		if (rows.length < ticketNumberPageSize) break;
+		nextOffset += ticketNumberPageSize;
+	}
+
+	if (highestTicketNumber >= Number.MAX_SAFE_INTEGER) {
+		throw new Error("The next ticket number exceeds the supported numeric range.");
+	}
+	return highestTicketNumber + 1;
+};
+
 const createProductLineDraft = (): ProductLineDraft => ({
 	id: crypto.randomUUID(),
 	productIndex: "",
@@ -159,9 +200,6 @@ const getProductFuelType = (product: Product): FuelType | null => {
 	if (/\bgas(?:oline)?\b/i.test(productText)) return "GASOLINE";
 	return null;
 };
-
-const generateTicketNumber = () =>
-	`TKT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
 
 const ticketLinesFor = (ticket: Ticket): TicketLine[] =>
 	ticket.items?.length ? ticket.items : [ticket];
@@ -296,6 +334,8 @@ function App() {
 	const [search, setSearch] = useState("");
 	const [customerSearch, setCustomerSearch] = useState("");
 	const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+	const [isThreeInchTicketPrint, setIsThreeInchTicketPrint] = useState(false);
+	const [ticketPdfError, setTicketPdfError] = useState("");
 	const [selectedHistoryCustomerId, setSelectedHistoryCustomerId] = useState("");
 	const [deliveryDateFilter, setDeliveryDateFilter] = useState<DeliveryDateFilter>("all");
 	const [historyCustomersLoading, setHistoryCustomersLoading] = useState(false);
@@ -309,6 +349,9 @@ function App() {
 	const [driverName, setDriverName] = useState("");
 	const [deliveryDate, setDeliveryDate] = useState(getLocalDateInputValue);
 	const [location, setLocation] = useState("South Dakota");
+	const [nextTicketNumber, setNextTicketNumber] = useState<number | null>(null);
+	const [ticketNumberLoading, setTicketNumberLoading] = useState(false);
+	const [ticketNumberError, setTicketNumberError] = useState("");
 	const [locationFuelTaxRates, setLocationFuelTaxRates] = useState<Partial<Record<FuelType, number>>>({});
 	const [locationFuelTaxRatesLoading, setLocationFuelTaxRatesLoading] = useState(false);
 	const [locationFuelTaxError, setLocationFuelTaxError] = useState("");
@@ -338,6 +381,40 @@ function App() {
 		window.addEventListener("popstate", updatePath);
 		return () => window.removeEventListener("popstate", updatePath);
 	}, []);
+
+	useEffect(() => {
+		if (!isThreeInchTicketPrint) return;
+
+		const finishPrint = () => setIsThreeInchTicketPrint(false);
+		window.addEventListener("afterprint", finishPrint);
+		window.print();
+		return () => window.removeEventListener("afterprint", finishPrint);
+	}, [isThreeInchTicketPrint]);
+
+	useEffect(() => {
+		if (!isCreateTicketPage) return;
+
+		let active = true;
+		setTicketNumberLoading(true);
+		setTicketNumberError("");
+		const loadNextTicketNumber = async () => {
+			try {
+				const number = await fetchNextTicketNumber();
+				if (active) setNextTicketNumber(number);
+			} catch (loadError) {
+				if (active) {
+					setTicketNumberError(loadError instanceof Error ? loadError.message : "Unable to load the next ticket number.");
+				}
+			} finally {
+				if (active) setTicketNumberLoading(false);
+			}
+		};
+
+		void loadNextTicketNumber();
+		return () => {
+			active = false;
+		};
+	}, [isCreateTicketPage]);
 
 	useEffect(() => {
 		if (!isHistoryPage) return;
@@ -1064,6 +1141,11 @@ function App() {
 		ticket.business_name ?? "—";
 	const downloadTicketPdf = async (ticket: Ticket) => {
 		const { jsPDF } = await import("jspdf");
+		const logoResponse = await fetch(gerstnerOilLogoUrl);
+		if (!logoResponse.ok) {
+			throw new Error(`Unable to load Gerstner Oil logo (${logoResponse.status}).`);
+		}
+		const logoData = new Uint8Array(await logoResponse.arrayBuffer());
 		const pdf = new jsPDF({ unit: "pt", format: "letter" });
 		const pageWidth = pdf.internal.pageSize.getWidth();
 		const pageHeight = pdf.internal.pageSize.getHeight();
@@ -1090,13 +1172,13 @@ function App() {
 			pdf.text(title.toUpperCase(), margin, y);
 		};
 
-		pdf.setFillColor(25, 67, 51);
-		pdf.rect(0, 0, pageWidth, 158, "F");
-		pdf.setTextColor(245, 250, 246);
+		pdf.setFillColor(255, 255, 255);
+		pdf.rect(0, 0, pageWidth, 205, "F");
+		pdf.addImage(logoData, "PNG", margin, 18, 150, 59.375, "gerstner-oil-logo", "FAST");
+		pdf.setTextColor(36, 58, 49);
 		pdf.setFont("helvetica", "bold");
-		pdf.setFontSize(18);
-		const companyNameLines = pdf.splitTextToSize(companyInfo.companyName || "FUEL DESK", 250);
-		pdf.text(companyNameLines, margin, 35);
+		pdf.setFontSize(10);
+		pdf.text(companyInfo.companyName || "FUEL DESK", margin, 94);
 		pdf.setFont("helvetica", "normal");
 		pdf.setFontSize(8);
 		const companyInfoLines = [
@@ -1104,7 +1186,7 @@ function App() {
 			companyCityLine ? `City, State ZIP: ${companyCityLine}` : "",
 			companyInfo.phone.trim() ? `Phone: ${companyInfo.phone.trim()}` : "",
 		].filter(Boolean);
-		let companyInfoY = 45 + companyNameLines.length * 17;
+		let companyInfoY = 106;
 		for (const infoLine of companyInfoLines) {
 			const lines = pdf.splitTextToSize(infoLine, 250);
 			pdf.text(lines, margin, companyInfoY);
@@ -1112,6 +1194,7 @@ function App() {
 		}
 		pdf.setFont("helvetica", "bold");
 		pdf.setFontSize(13);
+		pdf.setTextColor(36, 58, 49);
 		pdf.text("DELIVERY TICKET", pageWidth - margin, 36, { align: "right" });
 		pdf.setFontSize(10);
 		pdf.text(`Ticket ${formatDetail(ticket.ticket_number)}`, pageWidth - margin, 55, { align: "right" });
@@ -1119,7 +1202,9 @@ function App() {
 		pdf.setFontSize(9);
 		pdf.text(`Created ${formatDate(ticket.created_at)}`, pageWidth - margin, 74, { align: "right" });
 
-		let y = 181;
+		pdf.setDrawColor(222, 231, 225);
+		pdf.line(margin, 195, pageWidth - margin, 195);
+		let y = 215;
 		const ensurePdfSpace = (height: number) => {
 			if (y + height > pageHeight - margin) {
 				pdf.addPage();
@@ -1230,17 +1315,18 @@ function App() {
 		setSavingTicket(true);
 		setFormError("");
 		setFormMessage("");
-		const generatedTicketNumber = generateTicketNumber();
 		const firstLine = preparedProductLines[0];
 		const promptPayDiscount = draftTotalGallons * 0.07;
 		const discountedTotal = draftGrandTotal - promptPayDiscount;
 		const netAmountDue = draftInvoiceSubtotal + draftSalesTaxTotal - promptPayDiscount;
 
 		try {
+			const ticketNumber = await fetchNextTicketNumber();
+			setNextTicketNumber(ticketNumber);
 			const { data: insertedTicket, error: insertError } = await supabase
 				.from("delivery_tickets")
 				.insert({
-					ticket_number: generatedTicketNumber,
+					ticket_number: ticketNumber,
 					customer_id: selectedCustomer.id ?? selectedCustomer.customer_id,
 					driver_name: driverName,
 					delivery_date: deliveryDate,
@@ -1290,11 +1376,11 @@ function App() {
 				.insert(lineItems);
 
 			if (lineItemsError) {
-				setFormError(`Ticket ${generatedTicketNumber} was created, but its product lines could not be saved: ${lineItemsError.message}`);
+				setFormError(`Ticket ${ticketNumber} was created, but its product lines could not be saved: ${lineItemsError.message}`);
 				return;
 			}
 
-			setFormMessage(`Ticket ${generatedTicketNumber} saved.`);
+			setFormMessage(`Ticket ${ticketNumber} saved.`);
 			setProductLines([createProductLineDraft()]);
 			setSelectedCustomerIndex("");
 			setDriverName("");
@@ -1304,11 +1390,20 @@ function App() {
 			setFormError(submissionError instanceof Error ? submissionError.message : "Unable to save ticket.");
 		} finally {
 			setSavingTicket(false);
+			setTicketNumberLoading(true);
+			try {
+				setNextTicketNumber(await fetchNextTicketNumber());
+				setTicketNumberError("");
+			} catch (numberError) {
+				setTicketNumberError(numberError instanceof Error ? numberError.message : "Unable to refresh the next ticket number.");
+			} finally {
+				setTicketNumberLoading(false);
+			}
 		}
 	};
 
 	return (
-		<div className="app-shell">
+		<div className={`app-shell${isThreeInchTicketPrint ? " printing-thermal-receipt" : ""}`}>
 			<header className="topbar">
 				<a className="brand" href="/create-ticket" onClick={navigate} aria-label="Create ticket">
 					<span className="brand-mark">F</span>
@@ -1791,6 +1886,14 @@ function App() {
 							</div>
 							{referenceError && <p className="reference-error" role="alert">{referenceError}</p>}
 							<form className="ticket-form" onSubmit={(event) => void createTicket(event)}>
+								<label className="form-field calculated-field">
+									<span>Ticket number</span>
+									<input
+										readOnly
+										value={ticketNumberLoading ? "Loading…" : nextTicketNumber?.toString() ?? ""}
+										placeholder="Unable to load ticket number"
+									/>
+								</label>
 								<label className="form-field">
 									<span>Business name</span>
 									<select
@@ -2012,6 +2115,7 @@ function App() {
 								<div className="ticket-form-footer">
 									<div className="form-feedback" aria-live="polite">
 										{formError && <span className="form-error" role="alert">{formError}</span>}
+										{ticketNumberError && <span className="form-error" role="alert">{ticketNumberError}</span>}
 										{formMessage && (
 											<span className="form-success">
 												{formMessage} <a href="/ticket-history" onClick={navigate}>View Ticket History</a>
@@ -2030,7 +2134,7 @@ function App() {
 									<button
 										className="submit-ticket-button"
 										type="submit"
-										disabled={savingTicket || referencesLoading || locationFuelTaxRatesLoading || Boolean(locationFuelTaxError) || unclassifiedFuelProducts.length > 0 || !hasValidProductLines || !selectedCustomer || !driverName || !deliveryDate || !location.trim()}
+										disabled={savingTicket || ticketNumberLoading || nextTicketNumber === null || Boolean(ticketNumberError) || referencesLoading || locationFuelTaxRatesLoading || Boolean(locationFuelTaxError) || unclassifiedFuelProducts.length > 0 || !hasValidProductLines || !selectedCustomer || !driverName || !deliveryDate || !location.trim()}
 									>
 										{savingTicket ? "Saving…" : "Save ticket"}
 									</button>
@@ -2069,17 +2173,30 @@ function App() {
 							<button className="ticket-action-button" type="button" onClick={() => window.print()}>
 								Print Ticket
 							</button>
-							<button className="ticket-action-button primary-action" type="button" onClick={() => downloadTicketPdf(selectedTicket)}>
+							<button className="ticket-action-button" type="button" onClick={() => setIsThreeInchTicketPrint(true)}>
+								Print Receipt
+							</button>
+							<button
+								className="ticket-action-button primary-action"
+								type="button"
+								onClick={() => {
+									setTicketPdfError("");
+									void downloadTicketPdf(selectedTicket).catch((pdfError: unknown) => {
+										setTicketPdfError(pdfError instanceof Error ? pdfError.message : "Unable to create ticket PDF.");
+									});
+								}}
+							>
 								Download PDF
 							</button>
 							<button className="ticket-action-button close-action" type="button" onClick={() => setSelectedTicket(null)}>
 								Close
 							</button>
 						</div>
+						{ticketPdfError && <p className="ticket-pdf-error" role="alert">{ticketPdfError}</p>}
 						<article className="ticket-print-content">
 							<header className="ticket-paper-header">
 								<div className="ticket-company">
-									<span className="ticket-company-mark">F</span>
+									<img className="ticket-company-logo" src={gerstnerOilLogoSvgUrl} alt="Gerstner Oil Company" />
 									<div>
 										<strong>{companyInfo.companyName || "FUEL DESK"}</strong>
 										{companyInfo.address && <span>{companyInfo.address}</span>}
@@ -2212,6 +2329,58 @@ function App() {
 									</div>
 								</section>
 							</div>
+						</article>
+						<article className="thermal-receipt" aria-label="Thermal delivery receipt">
+							<header className="thermal-receipt-header">
+								<img className="thermal-receipt-logo" src={gerstnerOilLogoUrl} alt="Gerstner Oil Company" />
+								<strong>{companyInfo.companyName || "FUEL DESK"}</strong>
+								{companyInfo.address && <span>{companyInfo.address}</span>}
+								{companyCityLine && <span>{companyCityLine}</span>}
+								{companyInfo.phone && <span>Phone: {companyInfo.phone}</span>}
+								<strong className="thermal-receipt-title">DELIVERY RECEIPT</strong>
+							</header>
+
+							<section className="thermal-receipt-details" aria-label="Delivery details">
+								<div><span>Ticket</span><strong>{formatDetail(selectedTicket.ticket_number)}</strong></div>
+								<div><span>Customer</span><strong>{ticketBusinessName(selectedTicket)}</strong></div>
+								<div><span>Driver</span><strong>{formatDetail(selectedTicket.driver_name)}</strong></div>
+								<div><span>Delivery date</span><strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong></div>
+								<div><span>Location</span><strong>{formatDetail(selectedTicket.location)}</strong></div>
+							</section>
+
+							<section className="thermal-receipt-products" aria-label="Product lines">
+								<h3>PRODUCT LINES</h3>
+								{ticketLinesFor(selectedTicket).map((item, index) => (
+									<div className="thermal-receipt-product" key={`${item.id ?? index}-${index}`}>
+										<strong className="thermal-receipt-product-name">
+											{index + 1}. {formatDetail(item.product_name)}
+										</strong>
+										<div className="thermal-receipt-row">
+											<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} gal × {formatUnitPrice(item.sell_price)}</span>
+											<strong>{formatCurrency(item.extended_amount)}</strong>
+										</div>
+										<div className="thermal-receipt-disclosure">
+											<span>Federal fuel tax included</span>
+											<strong>{formatFourDecimalPrice(item.federal_fuel_tax)}/gal</strong>
+										</div>
+										<div className="thermal-receipt-disclosure">
+											<span>State fuel tax included</span>
+											<strong>{formatFourDecimalPrice(item.state_fuel_tax)}/gal</strong>
+										</div>
+										<div className="thermal-receipt-disclosure">
+											<span>Sales tax</span>
+											<strong>{formatCurrency(item.sales_tax_amount)}</strong>
+										</div>
+									</div>
+								))}
+							</section>
+
+							<section className="thermal-receipt-totals" aria-label="Receipt totals">
+								<div><span>Sales tax</span><strong>{formatCurrency(ticketSalesTaxTotal(selectedTicket))}</strong></div>
+								<div><span>Discount</span><strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong></div>
+								<div className="thermal-receipt-net"><span>Net amount due</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>
+							</section>
+							<footer className="thermal-receipt-footer">Thank you for your business.</footer>
 						</article>
 					</section>
 				</div>

@@ -16,6 +16,8 @@ type TicketLine = {
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
 	sales_tax_treatment?: string | null;
+	federal_fuel_tax?: number | string | null;
+	state_fuel_tax?: number | string | null;
 };
 
 type Ticket = {
@@ -51,11 +53,21 @@ type Product = {
 	name?: string | null;
 	code?: string | null;
 	sku?: string | null;
+	fuel_type?: string | null;
 	sell_price?: number | string | null;
 	current_price?: number | string | null;
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
+	federal_fuel_tax?: number | string | null;
+	state_fuel_tax?: number | string | null;
 	[key: string]: unknown;
+};
+
+type FuelType = "GASOLINE" | "ROAD_DIESEL" | "DYED_DIESEL";
+
+type LocationFuelTaxRate = {
+	fuel_type: string;
+	state_fuel_tax: number | string | null;
 };
 
 type Customer = {
@@ -118,6 +130,36 @@ const isDyedDieselProduct = (product: Product) => {
 	return /\bdyed\b/i.test(productText) && /\bdiesel\b/i.test(productText);
 };
 
+const isFuelType = (value: string): value is FuelType =>
+	value === "GASOLINE" || value === "ROAD_DIESEL" || value === "DYED_DIESEL";
+
+const normalizeFuelType = (value: string): FuelType | null => {
+	const normalized = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+	return isFuelType(normalized) ? normalized : null;
+};
+
+const getProductFuelType = (product: Product): FuelType | null => {
+	const configuredFuelType = product.fuel_type ? normalizeFuelType(product.fuel_type) : null;
+	if (configuredFuelType) return configuredFuelType;
+
+	const productText = [
+		product.product_name,
+		product.name,
+		product.product_code,
+		product.code,
+		product.sku,
+		product.category,
+		product.fuel_type,
+		product.description,
+	]
+		.filter((value): value is string => typeof value === "string")
+		.join(" ");
+	if (/\bdyed\b/i.test(productText) && /\bdiesel\b/i.test(productText)) return "DYED_DIESEL";
+	if (/\bdiesel\b/i.test(productText)) return "ROAD_DIESEL";
+	if (/\bgas(?:oline)?\b/i.test(productText)) return "GASOLINE";
+	return null;
+};
+
 const generateTicketNumber = () =>
 	`TKT-${Date.now().toString(36).toUpperCase()}-${crypto.randomUUID().replaceAll("-", "").slice(0, 8).toUpperCase()}`;
 
@@ -134,6 +176,13 @@ const finiteAmount = (value: unknown): number | undefined => {
 	if (value === null || value === undefined || value === "") return undefined;
 	const amount = Number(value);
 	return Number.isFinite(amount) ? amount : undefined;
+};
+
+const hasPriceChanged = (product: Product, draftPrice: string) => {
+	if (draftPrice === "") return product.current_price !== null && product.current_price !== undefined;
+	const draftAmount = Number(draftPrice);
+	const currentAmount = product.current_price == null ? Number.NaN : Number(product.current_price);
+	return !Number.isFinite(draftAmount) || !Number.isFinite(currentAmount) || draftAmount !== currentAmount;
 };
 
 const ticketTaxableSubtotal = (ticket: Ticket) =>
@@ -237,6 +286,7 @@ function App() {
 	const [pricingDraftPrices, setPricingDraftPrices] = useState<Record<number, string>>({});
 	const [pricingLoading, setPricingLoading] = useState(false);
 	const [savingPriceIndex, setSavingPriceIndex] = useState<number | null>(null);
+	const [savingAllPrices, setSavingAllPrices] = useState(false);
 	const [pricingError, setPricingError] = useState("");
 	const [pricingMessage, setPricingMessage] = useState("");
 	const [taxCodes, setTaxCodes] = useState<TaxCode[]>([]);
@@ -258,7 +308,10 @@ function App() {
 	const [driverNames, setDriverNames] = useState<string[]>([]);
 	const [driverName, setDriverName] = useState("");
 	const [deliveryDate, setDeliveryDate] = useState(getLocalDateInputValue);
-	const [location, setLocation] = useState("");
+	const [location, setLocation] = useState("South Dakota");
+	const [locationFuelTaxRates, setLocationFuelTaxRates] = useState<Partial<Record<FuelType, number>>>({});
+	const [locationFuelTaxRatesLoading, setLocationFuelTaxRatesLoading] = useState(false);
+	const [locationFuelTaxError, setLocationFuelTaxError] = useState("");
 	const [referencesLoading, setReferencesLoading] = useState(false);
 	const [savingTicket, setSavingTicket] = useState(false);
 	const [referenceError, setReferenceError] = useState("");
@@ -270,6 +323,15 @@ function App() {
 	const isCustomerHistoryPage = path === "/customer-history";
 	const isCreateTicketPage = path === "/create-ticket";
 	const isAdminPricingPage = path === "/admin/pricing";
+	const selectedFuelTypesKey = productLines.flatMap((line) => {
+		if (line.productIndex === "") return [];
+		const product = products[Number(line.productIndex)];
+		const fuelType = product ? getProductFuelType(product) : null;
+		return fuelType ? [fuelType] : [];
+	}).join(",");
+	const selectedProductIndexesKey = productLines
+		.flatMap((line) => line.productIndex === "" ? [] : [line.productIndex])
+		.join(",");
 
 	useEffect(() => {
 		const updatePath = () => setPath(window.location.pathname);
@@ -432,6 +494,76 @@ function App() {
 	}, [isCreateTicketPage]);
 
 	useEffect(() => {
+		if (!isCreateTicketPage) return;
+
+		let active = true;
+		setLocationFuelTaxRates({});
+		setLocationFuelTaxError("");
+		const fuelTypes = [...new Set(selectedFuelTypesKey.split(",").filter(isFuelType))];
+		if (fuelTypes.length === 0) {
+			setLocationFuelTaxRatesLoading(false);
+			return () => {
+				active = false;
+			};
+		}
+
+		setLocationFuelTaxRatesLoading(true);
+		const loadLocationFuelTaxRates = async () => {
+			try {
+				const { data, error: queryError } = await supabase
+					.from("location_fuel_tax_rates")
+					.select("fuel_type, state_fuel_tax")
+					.eq("location", location)
+					.in("fuel_type", fuelTypes);
+				if (!active) return;
+				if (queryError) {
+					setLocationFuelTaxError(`State fuel-tax rates could not be loaded: ${queryError.message}`);
+					return;
+				}
+
+				const rates: Partial<Record<FuelType, number>> = {};
+				for (const rate of (data ?? []) as LocationFuelTaxRate[]) {
+					const fuelType = normalizeFuelType(rate.fuel_type);
+					if (!fuelType) {
+						setLocationFuelTaxError(`Unsupported fuel type configured for ${location}: ${rate.fuel_type}.`);
+						return;
+					}
+					const amount = finiteAmount(rate.state_fuel_tax);
+					if (amount === undefined || amount < 0) {
+						setLocationFuelTaxError(`Invalid state fuel-tax rate configured for ${location} ${fuelType}.`);
+						return;
+					}
+					rates[fuelType] = amount;
+				}
+				setLocationFuelTaxRates(rates);
+				if (location !== "Other") {
+					const missingFuelTypes = fuelTypes.filter((fuelType) => rates[fuelType] === undefined);
+					if (missingFuelTypes.length > 0) {
+						setLocationFuelTaxError(
+							`No state fuel-tax rate is configured for ${location}: ${missingFuelTypes.join(", ")}.`,
+						);
+					}
+				}
+			} catch (queryError) {
+				if (active) {
+					setLocationFuelTaxError(
+						`State fuel-tax rates could not be loaded: ${
+							queryError instanceof Error ? queryError.message : "unknown error."
+						}`,
+					);
+				}
+			} finally {
+				if (active) setLocationFuelTaxRatesLoading(false);
+			}
+		};
+
+		void loadLocationFuelTaxRates();
+		return () => {
+			active = false;
+		};
+	}, [isCreateTicketPage, location, selectedFuelTypesKey, selectedProductIndexesKey]);
+
+	useEffect(() => {
 		if (!isAdminPricingPage) return;
 
 		let active = true;
@@ -565,6 +697,139 @@ function App() {
 		}
 	};
 
+	const saveAllProductPrices = async () => {
+		const validationErrors: string[] = [];
+		const failedIndexes = new Set<number>();
+		const productsToSave: Array<{
+			product: Product;
+			index: number;
+			productName: string;
+			numericPrice: number;
+		}> = [];
+
+		pricingProducts.forEach((product, index) => {
+			const priceText = pricingDraftPrices[index] ?? "";
+			if (!hasPriceChanged(product, priceText)) return;
+
+			const productName = String(product.product_name ?? product.name ?? product.title ?? `Product ${index + 1}`);
+			if (!/^(?:\d+(?:\.\d{1,4})?|\.\d{1,4})$/.test(priceText)) {
+				validationErrors.push(`${productName}: enter a price with no more than four decimal places.`);
+				failedIndexes.add(index);
+				return;
+			}
+			const price = Number(priceText);
+			if (!Number.isFinite(price) || price < 0) {
+				validationErrors.push(`${productName}: enter a valid price greater than or equal to zero.`);
+				failedIndexes.add(index);
+				return;
+			}
+			if (product.id === null || product.id === undefined) {
+				validationErrors.push(`${productName}: no product ID is available.`);
+				failedIndexes.add(index);
+				return;
+			}
+
+			productsToSave.push({
+				product,
+				index,
+				productName,
+				numericPrice: Number(price.toFixed(4)),
+			});
+		});
+
+		if (productsToSave.length === 0) {
+			setPricingError(validationErrors.join(" "));
+			setPricingMessage("");
+			return;
+		}
+
+		setSavingAllPrices(true);
+		setPricingError("");
+		setPricingMessage("");
+		try {
+			const saveResults = await Promise.all(productsToSave.map(async ({ product, index, productName, numericPrice }) => {
+				try {
+					const { data, error: saveError } = await supabase
+						.from("products")
+						.update({ current_price: numericPrice })
+						.eq("id", product.id)
+						.select("id, current_price")
+						.single();
+					if (saveError) {
+						return {
+							index,
+							error: `${productName}: ${saveError.code === "PGRST116"
+								? "no matching product was updated. Check the products UPDATE policy."
+								: saveError.message}`,
+						};
+					}
+					if (
+						!data ||
+						data.current_price === null ||
+						data.current_price === undefined ||
+						!Number.isFinite(Number(data.current_price)) ||
+						Number(data.current_price) !== numericPrice
+					) {
+						return { index, error: `${productName}: the saved price could not be verified.` };
+					}
+					return { index, error: null };
+				} catch (saveError) {
+					return {
+						index,
+						error: `${productName}: ${saveError instanceof Error ? saveError.message : "unable to save price."}`,
+					};
+				}
+			}));
+			saveResults.forEach((result) => {
+				if (result.error) failedIndexes.add(result.index);
+			});
+
+			let refreshError = "";
+			try {
+				const { data, error: loadError } = await supabase.from("products").select("*");
+				if (loadError) {
+					refreshError = `Prices were submitted, but the product list could not be refreshed: ${loadError.message}`;
+				} else {
+					const loadedProducts = (data ?? []) as Product[];
+					setPricingProducts(loadedProducts);
+					setPricingDraftPrices(Object.fromEntries(
+						loadedProducts.map((product, index) => {
+							const previousIndex = pricingProducts.findIndex((previous) =>
+								previous.id !== null && previous.id !== undefined && previous.id === product.id,
+							);
+							const draftIndex = previousIndex >= 0 ? previousIndex : index;
+							const draftPrice = failedIndexes.has(draftIndex)
+								? pricingDraftPrices[draftIndex] ?? ""
+								: product.current_price == null || !Number.isFinite(Number(product.current_price))
+									? ""
+									: Number(product.current_price).toFixed(4);
+							return [index, draftPrice];
+						}),
+					));
+				}
+			} catch (loadError) {
+				refreshError = `Prices were submitted, but the product list could not be refreshed: ${
+					loadError instanceof Error ? loadError.message : "unknown error."
+				}`;
+			}
+
+			const errors = [
+				...validationErrors,
+				...saveResults.flatMap((result) => result.error ? [result.error] : []),
+				...(refreshError ? [refreshError] : []),
+			];
+			if (errors.length > 0) {
+				setPricingError(errors.join(" "));
+			} else {
+				setPricingMessage("Prices Saved Successfully");
+			}
+		} catch (saveError) {
+			setPricingError(saveError instanceof Error ? saveError.message : "Unable to save product prices.");
+		} finally {
+			setSavingAllPrices(false);
+		}
+	};
+
 	const refreshProductCurrentPrice = async (
 		product: Product,
 		productIndex: string,
@@ -612,6 +877,9 @@ function App() {
 	};
 
 	const normalizedSearch = search.trim().toLowerCase();
+	const hasUnsavedPricingChanges = pricingProducts.some((product, index) =>
+		hasPriceChanged(product, pricingDraftPrices[index] ?? ""),
+	);
 	const filteredTickets = tickets.filter((ticket) =>
 		`${ticket.ticket_number ?? ""} ${ticketLinesFor(ticket).map((item) => item.product_name ?? "").join(" ")}`
 			.toLowerCase()
@@ -685,6 +953,7 @@ function App() {
 		const quantityValue = Number(line.quantity);
 		const sellPriceValue = Number(line.sellPrice);
 		const isDyedDiesel = product ? isDyedDieselProduct(product) : false;
+		const fuelType = product ? getProductFuelType(product) : null;
 		const defaultSalesTaxCode = product?.sales_tax_code == null ? "" : String(product.sales_tax_code).trim();
 		const salesTaxCode = isDyedDiesel
 			? line.salesTaxCodeOverride ?? "FARM_EXEMPT"
@@ -701,8 +970,11 @@ function App() {
 			productCode: String(product?.product_code ?? product?.code ?? product?.sku ?? ""),
 			productName: String(product?.product_name ?? product?.name ?? product?.title ?? ""),
 			isDyedDiesel,
+			fuelType,
 			salesTaxCode,
 			salesTaxTreatment: taxCode?.description?.trim() || salesTaxCode,
+			federalFuelTax: finiteAmount(product?.federal_fuel_tax) ?? 0,
+			stateFuelTax: fuelType ? locationFuelTaxRates[fuelType] ?? 0 : 0,
 			taxCode,
 			taxCodeMissing,
 			quantityValue,
@@ -720,6 +992,9 @@ function App() {
 	});
 	const hasValidProductLines = preparedProductLines.length > 0 && preparedProductLines.every((line) => line.isValid);
 	const unconfiguredTaxCodes = [...new Set(preparedProductLines.filter((line) => line.taxCodeMissing).map((line) => line.salesTaxCode))];
+	const unclassifiedFuelProducts = preparedProductLines
+		.filter((line) => line.product && !line.fuelType)
+		.map((line) => line.productName || line.productCode || "Selected product");
 	const draftTotalGallons = preparedProductLines.reduce(
 		(total, line) => total + (Number.isFinite(line.quantityValue) && line.quantityValue > 0 ? line.quantityValue : 0),
 		0,
@@ -866,7 +1141,7 @@ function App() {
 		const itemGap = 12;
 		const itemColumnWidth = (contentWidth - itemGap * 2) / 3;
 		for (const [index, item] of ticketItems.entries()) {
-			ensurePdfSpace(112);
+			ensurePdfSpace(190);
 			const productBottom = drawField(`Product ${index + 1}`, formatDetail(item.product_name), margin, y, columnWidth);
 			const codeBottom = drawField("Product code", formatDetail(item.product_code), margin + columnWidth + columnGap, y, columnWidth);
 			y = Math.max(productBottom, codeBottom) + 8;
@@ -874,6 +1149,21 @@ function App() {
 			const priceBottom = drawField("Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
 			const amountBottom = drawField("Line amount", formatCurrency(item.extended_amount), margin + (itemColumnWidth + itemGap) * 2, y, itemColumnWidth);
 			y = Math.max(quantityBottom, priceBottom, amountBottom) + 8;
+			const federalFuelTaxBottom = drawField(
+				"Federal Fuel Tax Included",
+				`${formatFourDecimalPrice(item.federal_fuel_tax)} per gallon`,
+				margin,
+				y,
+				columnWidth,
+			);
+			const stateFuelTaxBottom = drawField(
+				"State Fuel Tax Included",
+				`${formatFourDecimalPrice(item.state_fuel_tax)} per gallon`,
+				margin + columnWidth + columnGap,
+				y,
+				columnWidth,
+			);
+			y = Math.max(federalFuelTaxBottom, stateFuelTaxBottom) + 8;
 			const taxableBottom = drawField("Taxable amount", formatCurrency(item.taxable_amount), margin, y, columnWidth);
 			const salesTaxAmountBottom = drawField("Sales tax", formatCurrency(item.sales_tax_amount), margin + columnWidth + columnGap, y, columnWidth);
 			y = Math.max(taxableBottom, salesTaxAmountBottom) + 8;
@@ -885,7 +1175,6 @@ function App() {
 		const statGap = 10;
 		const statWidth = (contentWidth - statGap * 2) / 3;
 		const statHeight = 66;
-		ensurePdfSpace((statHeight + statGap) * 2 + 20);
 		const stats = [
 			["TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
 			["TAXABLE SUBTOTAL", formatCurrency(ticketTaxableSubtotal(ticket))],
@@ -894,6 +1183,9 @@ function App() {
 			["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))],
 			["NET AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))],
 		];
+		const statsRows = Math.ceil(stats.length / 3);
+		const statsBlockHeight = statsRows * (statHeight + statGap);
+		ensurePdfSpace(statsBlockHeight + 20);
 		stats.forEach(([label, value], index) => {
 			const x = margin + (index % 3) * (statWidth + statGap);
 			const yOffset = Math.floor(index / 3) * (statHeight + statGap);
@@ -907,7 +1199,7 @@ function App() {
 			pdf.setTextColor(index === 5 ? 29 : 35, index === 5 ? 105 : 67, index === 5 ? 72 : 53);
 			pdf.text(value, x + 12, y + yOffset + 46);
 		});
-		y += (statHeight + statGap) * 2 + 20;
+		y += statsBlockHeight + 20;
 
 		ensurePdfSpace(58);
 		y += 8;
@@ -925,6 +1217,9 @@ function App() {
 	const createTicket = async (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (
+			locationFuelTaxRatesLoading ||
+			locationFuelTaxError ||
+			unclassifiedFuelProducts.length > 0 ||
 			!selectedCustomer ||
 			!driverName ||
 			!deliveryDate ||
@@ -987,6 +1282,8 @@ function App() {
 				sales_tax_amount: line.salesTaxAmount,
 				excise_tax_code: line.product?.excise_tax_code,
 				sales_tax_code: line.salesTaxCode,
+				federal_fuel_tax: line.federalFuelTax,
+				state_fuel_tax: line.stateFuelTax,
 			}));
 			const { error: lineItemsError } = await supabase
 				.from("delivery_ticket_items")
@@ -1002,7 +1299,7 @@ function App() {
 			setSelectedCustomerIndex("");
 			setDriverName("");
 			setDeliveryDate(getLocalDateInputValue());
-			setLocation("");
+			setLocation("South Dakota");
 		} catch (submissionError) {
 			setFormError(submissionError instanceof Error ? submissionError.message : "Unable to save ticket.");
 		} finally {
@@ -1140,6 +1437,8 @@ function App() {
 													<th>Delivery date</th>
 												<th>Product</th>
 												<th>Tax treatment</th>
+												<th className="numeric-cell">Federal fuel tax / gal</th>
+												<th className="numeric-cell">State fuel tax / gal</th>
 												<th className="numeric-cell">Quantity</th>
 												<th className="numeric-cell">Sell price</th>
 												<th className="numeric-cell">Extended amount</th>
@@ -1163,6 +1462,8 @@ function App() {
 													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDeliveryDate(ticket.delivery_date)}</td>}
 													<td className="product-cell">{item.product_name ?? "—"}</td>
 													<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
+													<td className="numeric-cell">{formatFourDecimalPrice(item.federal_fuel_tax)}</td>
+													<td className="numeric-cell">{formatFourDecimalPrice(item.state_fuel_tax)}</td>
 													<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
 													<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
 													<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
@@ -1326,6 +1627,8 @@ function App() {
 														<th>Product name</th>
 														<th>Tax treatment</th>
 														<th>Location</th>
+														<th className="numeric-cell">Federal fuel tax / gal</th>
+														<th className="numeric-cell">State fuel tax / gal</th>
 														<th className="numeric-cell">Quantity</th>
 														<th className="numeric-cell">Sell price</th>
 														<th className="numeric-cell">Extended amount</th>
@@ -1348,6 +1651,8 @@ function App() {
 																<td className="product-cell">{item.product_name ?? "—"}</td>
 																<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
 																<td>{ticket.location ?? "—"}</td>
+																<td className="numeric-cell">{formatFourDecimalPrice(item.federal_fuel_tax)}</td>
+																<td className="numeric-cell">{formatFourDecimalPrice(item.state_fuel_tax)}</td>
 																<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
 																<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
 																<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
@@ -1387,6 +1692,16 @@ function App() {
 								<p className="heading-description">Review and update current product prices.</p>
 							</div>
 						</div>
+						<div>
+							<button
+								className="view-button"
+								type="button"
+								disabled={pricingLoading || savingAllPrices || savingPriceIndex !== null || !hasUnsavedPricingChanges}
+								onClick={() => void saveAllProductPrices()}
+							>
+								{savingAllPrices ? "Saving..." : "Save All Changes"}
+							</button>
+						</div>
 						<section className="ticket-section pricing-section">
 							<div className="table-scroll">
 								<table className="pricing-table">
@@ -1403,7 +1718,10 @@ function App() {
 											const priceText = pricingDraftPrices[index] ?? "";
 											const currentPrice = product.current_price == null ? "" : Number(product.current_price).toFixed(4);
 											return (
-												<tr key={String(product.id ?? product.product_code ?? index)}>
+												<tr
+													className={hasPriceChanged(product, priceText) ? "pricing-row-modified" : undefined}
+													key={String(product.id ?? product.product_code ?? index)}
+												>
 													<td className="product-cell">{String(product.product_name ?? product.name ?? product.title ?? `Product ${index + 1}`)}</td>
 													<td>{String(product.product_code ?? product.code ?? product.sku ?? "—")}</td>
 													<td>
@@ -1427,7 +1745,7 @@ function App() {
 														<button
 															className="view-button"
 															type="button"
-															disabled={savingPriceIndex !== null || priceText === currentPrice}
+															disabled={savingAllPrices || savingPriceIndex !== null || !hasPriceChanged(product, priceText)}
 															onClick={() => void saveProductPrice(product, index)}
 														>
 															{savingPriceIndex === index ? "Saving…" : "Save"}
@@ -1444,6 +1762,16 @@ function App() {
 								{!pricingLoading && pricingProducts.length === 0 && !pricingError && <span>No products are available.</span>}
 								{pricingError && <span className="form-error" role="alert">{pricingError}</span>}
 								{pricingMessage && <span className="form-success" role="status">{pricingMessage}</span>}
+							</div>
+							<div>
+								<button
+									className="view-button"
+									type="button"
+									disabled={pricingLoading || savingAllPrices || savingPriceIndex !== null || !hasUnsavedPricingChanges}
+									onClick={() => void saveAllProductPrices()}
+								>
+									{savingAllPrices ? "Saving..." : "Save All Changes"}
+								</button>
 							</div>
 						</section>
 					</>
@@ -1484,12 +1812,22 @@ function App() {
 								</label>
 								<label className="form-field">
 									<span>Location</span>
-									<input
+									<select
 										required
 										value={location}
-										onChange={(event) => setLocation(event.target.value)}
-										placeholder="Delivery location"
-									/>
+										onChange={(event) => {
+											setLocation(event.target.value);
+											setLocationFuelTaxRates({});
+											setLocationFuelTaxError("");
+											setLocationFuelTaxRatesLoading(Boolean(selectedFuelTypesKey));
+											setFormMessage("");
+										}}
+									>
+										<option value="South Dakota">South Dakota</option>
+										<option value="Nebraska">Nebraska</option>
+										<option value="Other">Other</option>
+									</select>
+									{locationFuelTaxRatesLoading && <span>Loading state fuel-tax rates…</span>}
 								</label>
 								<label className="form-field">
 									<span>Driver name</span>
@@ -1541,6 +1879,13 @@ function App() {
 															const productIndex = event.target.value;
 															const product = productIndex === "" ? null : products[Number(productIndex)] ?? null;
 															const initialSellPrice = product?.current_price == null ? "" : String(product.current_price);
+															if (productIndex !== line.productIndex) {
+																setLocationFuelTaxRates({});
+																setLocationFuelTaxError("");
+																setLocationFuelTaxRatesLoading(Boolean(product) || productLines.some((draft) =>
+																	draft.id !== line.id && draft.productIndex !== "",
+																));
+															}
 															setProductLines((current) => current.map((draft) => draft.id === line.id
 																? {
 																	...draft,
@@ -1625,6 +1970,14 @@ function App() {
 													<span>Sales tax</span>
 													<input readOnly value={line.isValid ? formatCurrency(line.salesTaxAmount) : ""} placeholder={line.taxCodeMissing ? "Tax code not configured" : "Calculated automatically"} />
 												</label>
+												<label className="form-field calculated-field">
+													<span>Federal Fuel Tax Included</span>
+													<input readOnly value={`${formatFourDecimalPrice(line.federalFuelTax)} per gallon`} />
+												</label>
+												<label className="form-field calculated-field">
+													<span>State Fuel Tax Included</span>
+													<input readOnly value={`${formatFourDecimalPrice(line.stateFuelTax)} per gallon`} />
+												</label>
 												<button
 													className="remove-product-button"
 													type="button"
@@ -1650,6 +2003,12 @@ function App() {
 										Configure tax code{unconfiguredTaxCodes.length === 1 ? "" : "s"} {unconfiguredTaxCodes.join(", ")} in the tax_codes table before saving.
 									</p>
 								)}
+								{unclassifiedFuelProducts.length > 0 && (
+									<p className="reference-error" role="alert">
+										Configure a supported fuel_type for {unclassifiedFuelProducts.join(", ")} before saving.
+									</p>
+								)}
+								{locationFuelTaxError && <p className="reference-error" role="alert">{locationFuelTaxError}</p>}
 								<div className="ticket-form-footer">
 									<div className="form-feedback" aria-live="polite">
 										{formError && <span className="form-error" role="alert">{formError}</span>}
@@ -1671,7 +2030,7 @@ function App() {
 									<button
 										className="submit-ticket-button"
 										type="submit"
-											disabled={savingTicket || referencesLoading || !hasValidProductLines || !selectedCustomer || !driverName || !deliveryDate || !location.trim()}
+										disabled={savingTicket || referencesLoading || locationFuelTaxRatesLoading || Boolean(locationFuelTaxError) || unclassifiedFuelProducts.length > 0 || !hasValidProductLines || !selectedCustomer || !driverName || !deliveryDate || !location.trim()}
 									>
 										{savingTicket ? "Saving…" : "Save ticket"}
 									</button>
@@ -1803,6 +2162,14 @@ function App() {
 													<div className="ticket-info-field">
 																<span>Tax Treatment</span>
 																<strong>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
+													</div>
+													<div className="ticket-info-field">
+																<span>Federal Fuel Tax Included</span>
+																<strong>{formatFourDecimalPrice(item.federal_fuel_tax)} per gallon</strong>
+													</div>
+													<div className="ticket-info-field">
+																<span>State Fuel Tax Included</span>
+																<strong>{formatFourDecimalPrice(item.state_fuel_tax)} per gallon</strong>
 													</div>
 												</div>
 											</article>

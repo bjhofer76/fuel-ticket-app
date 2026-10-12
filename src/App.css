@@ -375,6 +375,10 @@ a {
   min-width: 680px;
 }
 
+.pricing-row-modified td {
+  background: #fff4cc;
+}
+
 .pricing-input-label {
   display: block;
   width: 150px;
@@ -553,7 +557,7 @@ a {
   min-width: 0;
   padding: 12px;
   display: grid;
-  grid-template-columns: minmax(150px, 1.45fr) repeat(4, minmax(110px, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   align-items: end;
   gap: 12px;
   border: 1px solid #e7ece8;
@@ -561,7 +565,7 @@ a {
 }
 
 .product-line-row.tax-treatment-row {
-  grid-template-columns: minmax(150px, 1.35fr) repeat(5, minmax(95px, 1fr)) auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .product-lines-total {
@@ -577,12 +581,12 @@ a {
 }
 
 .product-lines-total span:nth-child(3),
-.product-lines-total span:last-child {
+.product-lines-total span:nth-child(n + 6) {
   grid-column: 1 / -1;
   justify-self: end;
 }
 
-.product-lines-total span:last-child {
+.product-lines-total span:nth-child(6) {
   padding-top: 8px;
   border-top: 1px solid #e3e9e4;
 }
@@ -1591,7 +1595,7 @@ tbody tr:hover {
 
   .product-lines-total span,
   .product-lines-total span:nth-child(3),
-  .product-lines-total span:last-child {
+  .product-lines-total span:nth-child(n + 6) {
     grid-column: auto;
     justify-self: stretch;
     display: flex;

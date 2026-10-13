@@ -76,6 +76,12 @@ type Customer = {
 	id?: string | number;
 	customer_id?: string | number;
 	business_name?: string | null;
+	nexgen_customer_id?: string | null;
+	classification?: string | null;
+	terms?: string | null;
+	salesperson?: string | null;
+	default_driver?: string | null;
+	credit_limit?: number | string | null;
 	[key: string]: unknown;
 };
 

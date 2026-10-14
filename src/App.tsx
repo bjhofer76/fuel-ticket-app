@@ -74,9 +74,9 @@ type LocationFuelTaxRate = {
 
 type Customer = {
 	id?: string | number;
-	customer_id?: string | number;
 	business_name?: string | null;
 	nexgen_customer_id?: string | null;
+	customer_number?: string | number | null;
 	classification?: string | null;
 	terms?: string | null;
 	salesperson?: string | null;
@@ -116,6 +116,26 @@ const getLocalDateInputValue = () => {
 
 const firstTicketNumber = 100000;
 const ticketNumberPageSize = 1000;
+const customerPageSize = 1000;
+
+const fetchAllCustomers = async () => {
+	const allCustomers: Customer[] = [];
+	let offset = 0;
+
+	while (true) {
+		const { data, error: queryError } = await supabase
+			.from("customers")
+			.select("id, business_name, nexgen_customer_id, customer_number")
+			.order("id", { ascending: true })
+			.range(offset, offset + customerPageSize - 1);
+		if (queryError) throw new Error(queryError.message);
+
+		const page = (data ?? []) as Customer[];
+		allCustomers.push(...page);
+		if (page.length < customerPageSize) return allCustomers;
+		offset += customerPageSize;
+	}
+};
 
 const fetchNextTicketNumber = async () => {
 	let nextOffset = 0;
@@ -251,6 +271,9 @@ const ticketNetAmountDue = (ticket: Ticket) =>
 	finiteAmount(ticket.net_amount_due) ??
 	ticketInvoiceSubtotal(ticket) + ticketSalesTaxTotal(ticket) - ticketPromptPayDiscount(ticket);
 
+// Display only: Net Due is the invoice amount before prompt pay discount.
+const ticketDisplayNetDue = (ticket: Ticket) => ticketNetAmountDue(ticket) + ticketPromptPayDiscount(ticket);
+
 const loadTicketLines = async (tickets: Ticket[]) => {
 	const ticketIds = tickets
 		.map((ticket) => ticket.id)
@@ -351,6 +374,9 @@ function App() {
 	const [lineItemsWarning, setLineItemsWarning] = useState("");
 	const [productLines, setProductLines] = useState<ProductLineDraft[]>([createProductLineDraft()]);
 	const [selectedCustomerIndex, setSelectedCustomerIndex] = useState("");
+	const [customerAutocompleteQuery, setCustomerAutocompleteQuery] = useState("");
+	const [customerAutocompleteOpen, setCustomerAutocompleteOpen] = useState(false);
+	const [highlightedCustomerIndex, setHighlightedCustomerIndex] = useState(0);
 	const [driverNames, setDriverNames] = useState<string[]>([]);
 	const [driverName, setDriverName] = useState("");
 	const [deliveryDate, setDeliveryDate] = useState(getLocalDateInputValue);
@@ -428,42 +454,45 @@ function App() {
 		const loadTickets = async () => {
 			setLoading(true);
 			setError("");
-			const [ticketResult, customerResult] = await Promise.all([
-				supabase
-					.from("delivery_tickets")
-					.select("*")
-					.order("created_at", { ascending: false }),
-				supabase.from("customers").select("*"),
-			]);
+			try {
+				const [ticketResult, customersForHistory] = await Promise.all([
+					supabase
+						.from("delivery_tickets")
+						.select("*")
+						.order("created_at", { ascending: false }),
+					fetchAllCustomers(),
+				]);
 
-			if (ticketResult.error) {
-				setError(ticketResult.error.message);
-			} else {
-				const customerById = new Map<string, Customer>();
-				for (const customer of (customerResult.data ?? []) as Customer[]) {
-					const customerId = customer.id ?? customer.customer_id;
-					if (customerId !== null && customerId !== undefined) {
-						customerById.set(String(customerId), customer);
+				if (ticketResult.error) {
+					setError(ticketResult.error.message);
+				} else {
+					const customerById = new Map<string, Customer>();
+					for (const customer of customersForHistory) {
+						if (customer.id !== null && customer.id !== undefined) {
+							customerById.set(String(customer.id), customer);
+						}
 					}
-				}
 
-				const ticketRows = (ticketResult.data ?? []) as Ticket[];
-				const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines(ticketRows);
-				setLineItemsWarning(lineItemsError
-					? `Ticket line or tax details could not be fully loaded (${lineItemsError}). Saved values are shown where available.`
-					: "");
-				setTickets(ticketsWithLines.map((ticket) => {
-					const customer = ticket.customer_id == null
-						? undefined
-						: customerById.get(String(ticket.customer_id));
-					const businessName = ticket.business_name ?? customer?.business_name ?? null;
-					return {
-						...ticket,
-						business_name: businessName,
-					};
-				}));
+					const ticketRows = (ticketResult.data ?? []) as Ticket[];
+					const { tickets: ticketsWithLines, error: lineItemsError } = await loadTicketLines(ticketRows);
+					setLineItemsWarning(lineItemsError
+						? `Ticket line or tax details could not be fully loaded (${lineItemsError}). Saved values are shown where available.`
+						: "");
+					setTickets(ticketsWithLines.map((ticket) => {
+						const customer = ticket.customer_id == null
+							? undefined
+							: customerById.get(String(ticket.customer_id));
+						return {
+							...ticket,
+							business_name: customer?.business_name ?? null,
+						};
+					}));
+				}
+			} catch (loadError) {
+				setError(loadError instanceof Error ? loadError.message : "Unable to load ticket history.");
+			} finally {
+				setLoading(false);
 			}
-			setLoading(false);
 		};
 
 		void loadTickets();
@@ -475,18 +504,17 @@ function App() {
 		const loadHistoryCustomers = async () => {
 			setHistoryCustomersLoading(true);
 			setHistoryCustomersError("");
-			const { data, error: queryError } = await supabase
-				.from("customers")
-				.select("id, business_name")
-				.order("business_name", { ascending: true });
-
-			if (queryError) {
-				setHistoryCustomersError(queryError.message);
+			try {
+				const loadedCustomers = await fetchAllCustomers();
+				setHistoryCustomers(loadedCustomers.sort((a, b) =>
+					(a.business_name ?? "").localeCompare(b.business_name ?? ""),
+				));
+			} catch (loadError) {
+				setHistoryCustomersError(loadError instanceof Error ? loadError.message : "Unable to load customers.");
 				setHistoryCustomers([]);
-			} else {
-				setHistoryCustomers((data ?? []) as Customer[]);
+			} finally {
+				setHistoryCustomersLoading(false);
 			}
-			setHistoryCustomersLoading(false);
 		};
 
 		void loadHistoryCustomers();
@@ -497,6 +525,9 @@ function App() {
 
 		let active = true;
 		const loadCustomerTickets = async () => {
+			const historyCustomer = historyCustomers.find(
+				(customer) => String(customer.id ?? "") === selectedHistoryCustomerId,
+			);
 			setCustomerTicketsLoading(true);
 			setCustomerTicketsError("");
 			setCustomerHistoryTickets([]);
@@ -516,7 +547,10 @@ function App() {
 				setLineItemsWarning(lineItemsError
 					? `Ticket line or tax details could not be fully loaded (${lineItemsError}). Saved values are shown where available.`
 					: "");
-				setCustomerHistoryTickets(ticketsWithLines);
+				setCustomerHistoryTickets(ticketsWithLines.map((ticket) => ({
+					...ticket,
+					business_name: historyCustomer?.business_name ?? null,
+				})));
 			}
 			setCustomerTicketsLoading(false);
 		};
@@ -525,7 +559,7 @@ function App() {
 		return () => {
 			active = false;
 		};
-	}, [isCustomerHistoryPage, selectedHistoryCustomerId]);
+	}, [isCustomerHistoryPage, selectedHistoryCustomerId, historyCustomers]);
 
 	useEffect(() => {
 		if (!isCreateTicketPage) return;
@@ -533,9 +567,8 @@ function App() {
 		const loadFormOptions = async () => {
 			setReferencesLoading(true);
 			setReferenceError("");
-			const [productsResult, customersResult, driversResult, taxCodesResult] = await Promise.all([
+			const [productsResult, driversResult, taxCodesResult] = await Promise.all([
 				supabase.from("products").select("*"),
-				supabase.from("customers").select("*"),
 				supabase.from("drivers").select("name").order("name", { ascending: true }),
 				supabase.from("tax_codes").select("sales_tax_code, description, tax_rate, is_taxable"),
 			]);
@@ -545,12 +578,13 @@ function App() {
 			} else {
 				setProducts((productsResult.data ?? []) as Product[]);
 			}
-			if (customersResult.error) {
+			try {
+				setCustomers(await fetchAllCustomers());
+			} catch (customerError) {
 				setReferenceError((current) =>
-					[current, `Customers: ${customersResult.error.message}`].filter(Boolean).join(" "),
+					[current, `Customers: ${customerError instanceof Error ? customerError.message : "Unable to load customers."}`]
+						.filter(Boolean).join(" "),
 				);
-			} else {
-				setCustomers((customersResult.data ?? []) as Customer[]);
 			}
 			if (driversResult.error) {
 				setReferenceError((current) =>
@@ -981,7 +1015,7 @@ function App() {
 		(customer.business_name ?? "").toLowerCase().includes(normalizedCustomerSearch),
 	);
 	const selectedHistoryCustomer = historyCustomers.find(
-		(customer) => String(customer.id ?? customer.customer_id ?? "") === selectedHistoryCustomerId,
+		(customer) => String(customer.id ?? "") === selectedHistoryCustomerId,
 	);
 	const customerDateStart = (() => {
 		const start = new Date();
@@ -1022,9 +1056,23 @@ function App() {
 		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.extended_amount) || 0), 0),
 		0,
 	);
+	const customerLabel = (customer: Customer, index: number) =>
+		String(customer.business_name ?? `Customer ${index + 1}`);
 	const selectedCustomer = selectedCustomerIndex === ""
 		? null
 		: customers[Number(selectedCustomerIndex)] ?? null;
+	const normalizedCustomerAutocompleteQuery = customerAutocompleteQuery.trim().toLowerCase();
+	const customerAutocompleteResults = customers
+		.map((customer, index) => ({ customer, index }))
+		.filter(({ customer }) => !normalizedCustomerAutocompleteQuery || [
+			customer.business_name,
+			customer.nexgen_customer_id,
+			customer.customer_number,
+		].some((value) => String(value ?? "").toLowerCase().includes(normalizedCustomerAutocompleteQuery)))
+		.slice(0, 20);
+	const displayedCustomerAutocompleteValue = customerAutocompleteOpen || !selectedCustomer
+		? customerAutocompleteQuery
+		: customerLabel(selectedCustomer, Number(selectedCustomerIndex));
 	const taxCodeByCode = new Map(taxCodes.map((taxCode) => [String(taxCode.sales_tax_code ?? "").trim(), taxCode]));
 	const dyedDieselTaxCodes = ["FARM_EXEMPT", "SD_STATE", "YANKTON_CITY", "EXEMPT"]
 		.flatMap((code) => {
@@ -1141,8 +1189,6 @@ function App() {
 	};
 	const productLabel = (product: Product, index: number) =>
 		String(product.product_name ?? product.name ?? product.title ?? product.id ?? `Product ${index + 1}`);
-	const customerLabel = (customer: Customer, index: number) =>
-		String(customer.business_name ?? `Customer ${index + 1}`);
 	const ticketBusinessName = (ticket: Ticket) =>
 		ticket.business_name ?? "—";
 	const downloadTicketPdf = async (ticket: Ticket) => {
@@ -1272,7 +1318,8 @@ function App() {
 			["SALES TAX", formatCurrency(ticketSalesTaxTotal(ticket))],
 			["INVOICE SUBTOTAL", formatCurrency(ticketInvoiceSubtotal(ticket))],
 			["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))],
-			["NET AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))],
+			["NET DUE", formatCurrency(ticketDisplayNetDue(ticket))],
+			["PROMPT PAY AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))],
 		];
 		const statsRows = Math.ceil(stats.length / 3);
 		const statsBlockHeight = statsRows * (statHeight + statGap);
@@ -1333,7 +1380,7 @@ function App() {
 				.from("delivery_tickets")
 				.insert({
 					ticket_number: ticketNumber,
-					customer_id: selectedCustomer.id ?? selectedCustomer.customer_id,
+					customer_id: selectedCustomer.id,
 					driver_name: driverName,
 					delivery_date: deliveryDate,
 					location: location.trim(),
@@ -1389,6 +1436,8 @@ function App() {
 			setFormMessage(`Ticket ${ticketNumber} saved.`);
 			setProductLines([createProductLineDraft()]);
 			setSelectedCustomerIndex("");
+			setCustomerAutocompleteQuery("");
+			setCustomerAutocompleteOpen(false);
 			setDriverName("");
 			setDeliveryDate(getLocalDateInputValue());
 			setLocation("South Dakota");
@@ -1412,8 +1461,7 @@ function App() {
 		<div className={`app-shell${isThreeInchTicketPrint ? " printing-thermal-receipt" : ""}`}>
 			<header className="topbar">
 				<a className="brand" href="/create-ticket" onClick={navigate} aria-label="Create ticket">
-					<span className="brand-mark">F</span>
-					<span>Fuel desk</span>
+					<img className="brand-logo" src={gerstnerOilLogoSvgUrl} alt="Gerstner Oil Company" />
 				</a>
 				<nav className="main-nav" aria-label="Main navigation">
 						<a
@@ -1528,62 +1576,47 @@ function App() {
 									</span>
 								</div>
 							) : (
-								<div className="table-scroll">
-									<table>
-										<thead>
-											<tr>
-												<th>Ticket number</th>
-											<th>Business name</th>
-													<th>Driver name</th>
-													<th>Delivery date</th>
-												<th>Product</th>
-												<th>Tax treatment</th>
-												<th className="numeric-cell">Federal fuel tax / gal</th>
-												<th className="numeric-cell">State fuel tax / gal</th>
-												<th className="numeric-cell">Quantity</th>
-												<th className="numeric-cell">Sell price</th>
-												<th className="numeric-cell">Extended amount</th>
-											<th className="numeric-cell">Taxable subtotal</th>
-											<th className="numeric-cell">Sales tax</th>
-											<th className="numeric-cell">Invoice subtotal</th>
-												<th className="numeric-cell">Prompt Pay Discount</th>
-												<th className="numeric-cell">Net amount due</th>
-												<th>Created</th>
-												<th><span className="sr-only">Actions</span></th>
-											</tr>
-										</thead>
-										<tbody>
-										{filteredTickets.flatMap((ticket, index) => {
-											const lines = ticketLinesFor(ticket);
-											return lines.map((item, itemIndex) => (
-												<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${item.id ?? itemIndex}`}>
-													{itemIndex === 0 && <td className="ticket-number" rowSpan={lines.length}>{ticket.ticket_number ?? "—"}</td>}
-													{itemIndex === 0 && <td rowSpan={lines.length}>{ticketBusinessName(ticket)}</td>}
-													{itemIndex === 0 && <td rowSpan={lines.length}>{formatDetail(ticket.driver_name)}</td>}
-													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDeliveryDate(ticket.delivery_date)}</td>}
-													<td className="product-cell">{item.product_name ?? "—"}</td>
-													<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
-													<td className="numeric-cell">{formatFourDecimalPrice(item.federal_fuel_tax)}</td>
-													<td className="numeric-cell">{formatFourDecimalPrice(item.state_fuel_tax)}</td>
-													<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
-													<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
-													<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
-													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketTaxableSubtotal(ticket))}</td>}
-													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketSalesTaxTotal(ticket))}</td>}
-													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketInvoiceSubtotal(ticket))}</td>}
-													{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
-													{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketNetAmountDue(ticket))}</td>}
-													{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{formatDate(ticket.created_at)}</td>}
-													{itemIndex === 0 && (
-														<td rowSpan={lines.length}>
-															<button className="view-button" type="button" onClick={() => setSelectedTicket(ticket)}>View</button>
-														</td>
-													)}
-												</tr>
-											));
-										})}
-										</tbody>
-									</table>
+								<div className="ticket-history-list">
+									{filteredTickets.map((ticket, index) => (
+										<article className="ticket-history-card" key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}`}>
+											<header className="ticket-history-card-header">
+												<div>
+													<span className="ticket-history-number">Ticket {ticket.ticket_number ?? "—"}</span>
+													<h3>{ticketBusinessName(ticket)}</h3>
+												</div>
+												<button className="view-button" type="button" onClick={() => setSelectedTicket(ticket)}>View ticket</button>
+											</header>
+											<div className="ticket-history-meta">
+												<span><small>Driver</small><strong>{formatDetail(ticket.driver_name)}</strong></span>
+												<span><small>Delivery date</small><strong>{formatDeliveryDate(ticket.delivery_date)}</strong></span>
+												<span><small>Created</small><strong>{formatDate(ticket.created_at)}</strong></span>
+											</div>
+											<div className="ticket-history-products">
+												{ticketLinesFor(ticket).map((item, itemIndex) => (
+													<div className="ticket-history-product" key={`${item.id ?? itemIndex}-${itemIndex}`}>
+														<div className="ticket-history-product-heading">
+															<strong>{item.product_name ?? "—"}</strong>
+															<strong>{formatCurrency(item.extended_amount)}</strong>
+														</div>
+														<div className="ticket-history-product-details">
+															<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} gal × {formatFourDecimalPrice(item.sell_price)}</span>
+															<span>Tax treatment: {formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</span>
+															<span>Federal tax: {formatFourDecimalPrice(item.federal_fuel_tax)}/gal</span>
+															<span>State tax: {formatFourDecimalPrice(item.state_fuel_tax)}/gal</span>
+														</div>
+													</div>
+												))}
+											</div>
+											<div className="ticket-history-totals">
+												<span>Taxable subtotal<strong>{formatCurrency(ticketTaxableSubtotal(ticket))}</strong></span>
+												<span>Sales tax<strong>{formatCurrency(ticketSalesTaxTotal(ticket))}</strong></span>
+												<span>Invoice subtotal<strong>{formatCurrency(ticketInvoiceSubtotal(ticket))}</strong></span>
+												<span>Prompt Pay Discount<strong>{formatCurrency(ticketPromptPayDiscount(ticket))}</strong></span>
+												<span className="ticket-history-net-due">Net due<strong>{formatCurrency(ticketDisplayNetDue(ticket))}</strong></span>
+												<span className="ticket-history-net-due">Prompt Pay Amount Due<strong>{formatCurrency(ticketNetAmountDue(ticket))}</strong></span>
+											</div>
+										</article>
+									))}
 									<div className="table-footer">
 										Showing {filteredTickets.length} of {tickets.length} tickets
 									</div>
@@ -1631,7 +1664,7 @@ function App() {
 										{historyCustomersLoading ? "Loading customers…" : "Choose a customer"}
 									</option>
 									{filteredHistoryCustomers.map((customer, index) => {
-										const customerId = customer.id ?? customer.customer_id;
+										const customerId = customer.id;
 										return (
 											<option key={`${customerId ?? index}-${index}`} value={customerId ?? ""}>
 												{customer.business_name || "Unnamed customer"}
@@ -1737,7 +1770,8 @@ function App() {
 														<th className="numeric-cell">Sales tax</th>
 														<th className="numeric-cell">Invoice subtotal</th>
 														<th className="numeric-cell">Prompt Pay Discount</th>
-														<th className="numeric-cell">Net amount due</th>
+														<th className="numeric-cell">Net due</th>
+														<th className="numeric-cell">Prompt Pay Amount Due</th>
 														<th><span className="sr-only">Actions</span></th>
 													</tr>
 												</thead>
@@ -1761,6 +1795,7 @@ function App() {
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketSalesTaxTotal(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketInvoiceSubtotal(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketDisplayNetDue(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketNetAmountDue(ticket))}</td>}
 																{itemIndex === 0 && (
 																	<td rowSpan={lines.length}>
@@ -1892,6 +1927,11 @@ function App() {
 							</div>
 							{referenceError && <p className="reference-error" role="alert">{referenceError}</p>}
 							<form className="ticket-form" onSubmit={(event) => void createTicket(event)}>
+								<section className="ticket-form-card ticket-information-card" aria-labelledby="ticket-information-heading">
+									<div className="ticket-form-card-heading">
+										<h3 id="ticket-information-heading">Ticket Information</h3>
+										<p>Customer and delivery details</p>
+									</div>
 								<label className="form-field calculated-field">
 									<span>Ticket number</span>
 									<input
@@ -1900,25 +1940,97 @@ function App() {
 										placeholder="Unable to load ticket number"
 									/>
 								</label>
-								<label className="form-field">
-									<span>Business name</span>
-									<select
-										required
-										value={selectedCustomerIndex}
-										onChange={(event) => {
-											setSelectedCustomerIndex(event.target.value);
-											setFormMessage("");
-										}}
-										disabled={referencesLoading || customers.length === 0}
-									>
-										<option value="">{referencesLoading ? "Loading customers…" : "Select a customer"}</option>
-										{customers.map((customer, index) => (
-											<option value={index} key={`${customer.id ?? customer.customer_id ?? index}-${index}`}>
-												{customerLabel(customer, index)}
-											</option>
-										))}
-									</select>
-								</label>
+								<div className="form-field customer-autocomplete-field">
+									<label htmlFor="ticket-customer">Business name</label>
+									<div className="customer-autocomplete">
+										<input
+											id="ticket-customer"
+											type="text"
+											role="combobox"
+											autoComplete="off"
+											aria-autocomplete="list"
+											aria-expanded={customerAutocompleteOpen}
+											aria-controls="ticket-customer-options"
+											aria-activedescendant={
+												customerAutocompleteOpen && customerAutocompleteResults[highlightedCustomerIndex]
+													? `ticket-customer-option-${customerAutocompleteResults[highlightedCustomerIndex].index}`
+													: undefined
+											}
+											aria-required="true"
+											placeholder={referencesLoading ? "Loading customers…" : "Search by name or customer number"}
+											value={displayedCustomerAutocompleteValue}
+											onFocus={() => setCustomerAutocompleteOpen(true)}
+											onChange={(event) => {
+												setCustomerAutocompleteQuery(event.target.value);
+												setSelectedCustomerIndex("");
+												setHighlightedCustomerIndex(0);
+												setCustomerAutocompleteOpen(true);
+												setFormMessage("");
+											}}
+											onKeyDown={(event) => {
+												if (event.key === "ArrowDown") {
+													event.preventDefault();
+													setCustomerAutocompleteOpen(true);
+													setHighlightedCustomerIndex((current) =>
+														Math.min(current + 1, Math.max(customerAutocompleteResults.length - 1, 0)),
+													);
+												} else if (event.key === "ArrowUp") {
+													event.preventDefault();
+													setCustomerAutocompleteOpen(true);
+													setHighlightedCustomerIndex((current) => Math.max(current - 1, 0));
+												} else if (event.key === "Enter" && customerAutocompleteOpen) {
+													if (customerAutocompleteResults[highlightedCustomerIndex]) {
+														event.preventDefault();
+														const { customer, index } = customerAutocompleteResults[highlightedCustomerIndex];
+														setSelectedCustomerIndex(String(index));
+														setCustomerAutocompleteQuery(customerLabel(customer, index));
+														setCustomerAutocompleteOpen(false);
+													} else {
+														event.preventDefault();
+													}
+												} else if (event.key === "Escape") {
+													setCustomerAutocompleteOpen(false);
+													setCustomerAutocompleteQuery(selectedCustomer
+														? customerLabel(selectedCustomer, Number(selectedCustomerIndex))
+														: customerAutocompleteQuery);
+												}
+											}}
+											onBlur={() => setCustomerAutocompleteOpen(false)}
+											disabled={referencesLoading || customers.length === 0}
+										/>
+										{customerAutocompleteOpen && (
+											<div className="customer-autocomplete-options" id="ticket-customer-options" role="listbox">
+												{customerAutocompleteResults.length > 0 ? customerAutocompleteResults.map(({ customer, index }, resultIndex) => (
+													<button
+														className={`customer-autocomplete-option${resultIndex === highlightedCustomerIndex ? " highlighted" : ""}`}
+														id={`ticket-customer-option-${index}`}
+														key={`${customer.id ?? index}-${index}`}
+														type="button"
+														role="option"
+														aria-selected={resultIndex === highlightedCustomerIndex}
+														onMouseDown={(event) => event.preventDefault()}
+														onMouseEnter={() => setHighlightedCustomerIndex(resultIndex)}
+														onClick={() => {
+															setSelectedCustomerIndex(String(index));
+															setCustomerAutocompleteQuery(customerLabel(customer, index));
+															setCustomerAutocompleteOpen(false);
+															setFormMessage("");
+														}}
+													>
+														{customerLabel(customer, index)}
+													</button>
+												)) : (
+													<div className="customer-autocomplete-empty" role="status">
+														{referencesLoading ? "Loading customers…" : "No matching customers"}
+													</div>
+												)}
+											</div>
+										)}
+									</div>
+									{!selectedCustomer && customerAutocompleteQuery && (
+										<span className="customer-autocomplete-hint">Select a customer from the results.</span>
+									)}
+								</div>
 								<label className="form-field">
 									<span>Location</span>
 									<select
@@ -1965,9 +2077,11 @@ function App() {
 										}}
 									/>
 								</label>
+								</section>
+								<section className="ticket-form-card product-lines-card" aria-labelledby="product-lines-heading">
 								<div className="product-lines-field">
 									<div className="product-lines-heading">
-										<h3>Product lines</h3>
+										<h3 id="product-lines-heading">Product Lines</h3>
 										<button
 											className="add-product-button"
 											type="button"
@@ -2098,15 +2212,23 @@ function App() {
 											</div>
 										))}
 									</div>
+								</div>
+								</section>
+								<section className="ticket-form-card pricing-totals-card" aria-labelledby="pricing-totals-heading">
+									<div className="ticket-form-card-heading">
+										<h3 id="pricing-totals-heading">Pricing &amp; Totals</h3>
+										<p>Delivery cost summary</p>
+									</div>
 									<div className="product-lines-total">
 										<span>Total gallons <strong>{draftTotalGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong></span>
 										<span>Taxable subtotal <strong>{formatCurrency(draftTaxableSubtotal)}</strong></span>
 										<span>Sales tax <strong>{formatCurrency(draftSalesTaxTotal)}</strong></span>
 										<span>Invoice subtotal <strong>{formatCurrency(draftInvoiceSubtotal)}</strong></span>
 										<span>Prompt Pay Discount (7¢/gal if paid within 10 days) <strong>{formatCurrency(draftPromptPayDiscount)}</strong></span>
-										<span>Net amount due <strong>{formatCurrency(draftNetAmountDue)}</strong></span>
+										<span>Net due <strong>{formatCurrency(draftNetAmountDue + draftPromptPayDiscount)}</strong></span>
+										<span>Prompt Pay Amount Due <strong>{formatCurrency(draftNetAmountDue)}</strong></span>
 									</div>
-								</div>
+								</section>
 								{unconfiguredTaxCodes.length > 0 && (
 									<p className="reference-error" role="alert">
 										Configure tax code{unconfiguredTaxCodes.length === 1 ? "" : "s"} {unconfiguredTaxCodes.join(", ")} in the tax_codes table before saving.
@@ -2322,7 +2444,11 @@ function App() {
 										<strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong>
 									</div>
 									<div className="ticket-metric total-metric">
-										<span>Net amount due</span>
+										<span>Net due</span>
+										<strong>{formatCurrency(ticketDisplayNetDue(selectedTicket))}</strong>
+									</div>
+									<div className="ticket-metric total-metric">
+										<span>Prompt Pay Amount Due</span>
 										<strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong>
 									</div>
 								</section>
@@ -2384,7 +2510,8 @@ function App() {
 							<section className="thermal-receipt-totals" aria-label="Receipt totals">
 								<div><span>Sales tax</span><strong>{formatCurrency(ticketSalesTaxTotal(selectedTicket))}</strong></div>
 								<div><span>Discount</span><strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong></div>
-								<div className="thermal-receipt-net"><span>Net amount due</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>
+								<div className="thermal-receipt-net"><span>Net due</span><strong>{formatCurrency(ticketDisplayNetDue(selectedTicket))}</strong></div>
+								<div className="thermal-receipt-net"><span>Prompt Pay Amount Due</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>
 							</section>
 							<footer className="thermal-receipt-footer">Thank you for your business.</footer>
 						</article>

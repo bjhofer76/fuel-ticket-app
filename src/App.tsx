@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { companyCityLine, companyInfo } from "./lib/company-settings";
+import { LubeTicketPage } from "./LubeTicketPage";
 import gerstnerOilLogoUrl from "./assets/gerstner-oil-logo.png";
 import gerstnerOilLogoSvgUrl from "./assets/gerstner-oil-logo.svg";
 import "./App.css";
@@ -45,6 +46,7 @@ type Ticket = {
 	excise_tax_code?: string | number | null;
 	sales_tax_code?: string | number | null;
 	created_at?: string | null;
+	ticket_type?: "FUEL" | "LUBE" | null;
 	[key: string]: unknown;
 };
 
@@ -62,6 +64,8 @@ type Product = {
 	sales_tax_code?: string | number | null;
 	federal_fuel_tax?: number | string | null;
 	state_fuel_tax?: number | string | null;
+	product_type?: "FUEL" | "LUBE" | null;
+	quickbooks_tax_code?: string | null;
 	[key: string]: unknown;
 };
 
@@ -397,6 +401,7 @@ function App() {
 	const isHistoryPage = path === "/ticket-history";
 	const isCustomerHistoryPage = path === "/customer-history";
 	const isCreateTicketPage = path === "/create-ticket";
+	const isLubeTicketPage = path === "/bulk-oil-lubricants";
 	const isAdminPricingPage = path === "/admin/pricing";
 	const selectedFuelTypesKey = productLines.flatMap((line) => {
 		if (line.productIndex === "") return [];
@@ -424,7 +429,7 @@ function App() {
 	}, [isThreeInchTicketPrint]);
 
 	useEffect(() => {
-		if (!isCreateTicketPage) return;
+		if (!isCreateTicketPage && !isLubeTicketPage) return;
 
 		let active = true;
 		setTicketNumberLoading(true);
@@ -446,7 +451,7 @@ function App() {
 		return () => {
 			active = false;
 		};
-	}, [isCreateTicketPage]);
+	}, [isCreateTicketPage, isLubeTicketPage]);
 
 	useEffect(() => {
 		if (!isHistoryPage) return;
@@ -562,53 +567,72 @@ function App() {
 	}, [isCustomerHistoryPage, selectedHistoryCustomerId, historyCustomers]);
 
 	useEffect(() => {
-		if (!isCreateTicketPage) return;
+		if (!isCreateTicketPage && !isLubeTicketPage) return;
+
+		let active = true;
+		setReferencesLoading(true);
+		setReferenceError("");
+		setProducts([]);
+		setCustomers([]);
+		setDriverNames([]);
+		setTaxCodes([]);
 
 		const loadFormOptions = async () => {
-			setReferencesLoading(true);
-			setReferenceError("");
-			const [productsResult, driversResult, taxCodesResult] = await Promise.all([
-				supabase.from("products").select("*"),
-				supabase.from("drivers").select("name").order("name", { ascending: true }),
-				supabase.from("tax_codes").select("sales_tax_code, description, tax_rate, is_taxable"),
-			]);
-
-			if (productsResult.error) {
-				setReferenceError(`Products: ${productsResult.error.message}`);
-			} else {
-				setProducts((productsResult.data ?? []) as Product[]);
-			}
 			try {
-				setCustomers(await fetchAllCustomers());
-			} catch (customerError) {
-				setReferenceError((current) =>
-					[current, `Customers: ${customerError instanceof Error ? customerError.message : "Unable to load customers."}`]
-						.filter(Boolean).join(" "),
-				);
+				const [productsResult, driversResult, taxCodesResult] = await Promise.all([
+					supabase.from("products").select("*").eq("product_type", isLubeTicketPage ? "LUBE" : "FUEL"),
+					supabase.from("drivers").select("name").order("name", { ascending: true }),
+					supabase.from("tax_codes").select("sales_tax_code, description, tax_rate, is_taxable"),
+				]);
+				if (!active) return;
+
+				if (productsResult.error) {
+					setReferenceError(`Products: ${productsResult.error.message}`);
+				} else {
+					setProducts((productsResult.data ?? []) as Product[]);
+				}
+				try {
+					setCustomers(await fetchAllCustomers());
+				} catch (customerError) {
+					if (active) {
+						setReferenceError((current) =>
+							[current, `Customers: ${customerError instanceof Error ? customerError.message : "Unable to load customers."}`]
+								.filter(Boolean).join(" "),
+						);
+					}
+				}
+				if (driversResult.error) {
+					setReferenceError((current) =>
+						[current, `Drivers: ${driversResult.error.message}`].filter(Boolean).join(" "),
+					);
+				} else {
+					setDriverNames(
+						[...new Set(((driversResult.data ?? []) as Driver[])
+							.map((driver) => driver.name?.trim())
+							.filter((name): name is string => Boolean(name)))],
+					);
+				}
+				if (taxCodesResult.error) {
+					setReferenceError((current) =>
+						[current, `Tax codes: ${taxCodesResult.error.message}`].filter(Boolean).join(" "),
+					);
+				} else {
+					setTaxCodes((taxCodesResult.data ?? []) as TaxCode[]);
+				}
+			} catch (loadError) {
+				if (active) {
+					setReferenceError(loadError instanceof Error ? loadError.message : "Unable to load ticket form options.");
+				}
+			} finally {
+				if (active) setReferencesLoading(false);
 			}
-			if (driversResult.error) {
-				setReferenceError((current) =>
-					[current, `Drivers: ${driversResult.error.message}`].filter(Boolean).join(" "),
-				);
-			} else {
-				setDriverNames(
-					[...new Set(((driversResult.data ?? []) as Driver[])
-						.map((driver) => driver.name?.trim())
-						.filter((name): name is string => Boolean(name)))],
-				);
-			}
-			if (taxCodesResult.error) {
-				setReferenceError((current) =>
-					[current, `Tax codes: ${taxCodesResult.error.message}`].filter(Boolean).join(" "),
-				);
-			} else {
-				setTaxCodes((taxCodesResult.data ?? []) as TaxCode[]);
-			}
-			setReferencesLoading(false);
 		};
 
 		void loadFormOptions();
-	}, [isCreateTicketPage]);
+		return () => {
+			active = false;
+		};
+	}, [isCreateTicketPage, isLubeTicketPage]);
 
 	useEffect(() => {
 		if (!isCreateTicketPage) return;
@@ -689,7 +713,7 @@ function App() {
 			setPricingError("");
 			setPricingMessage("");
 			try {
-				const { data, error: loadError } = await supabase.from("products").select("*");
+				const { data, error: loadError } = await supabase.from("products").select("*").eq("product_type", "FUEL");
 				if (!active) return;
 				if (loadError) {
 					setPricingError(loadError.message);
@@ -903,7 +927,7 @@ function App() {
 
 			let refreshError = "";
 			try {
-				const { data, error: loadError } = await supabase.from("products").select("*");
+				const { data, error: loadError } = await supabase.from("products").select("*").eq("product_type", "FUEL");
 				if (loadError) {
 					refreshError = `Prices were submitted, but the product list could not be refreshed: ${loadError.message}`;
 				} else {
@@ -1003,7 +1027,7 @@ function App() {
 			.includes(normalizedSearch),
 	);
 	const totalGallons = tickets.reduce(
-		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0),
+		(total, ticket) => total + (ticket.ticket_type === "LUBE" ? 0 : ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)),
 		0,
 	);
 	const totalRevenue = tickets.reduce(
@@ -1049,7 +1073,7 @@ function App() {
 		})
 		: customerHistoryTickets;
 	const customerHistoryGallons = customerVisibleTickets.reduce(
-		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0),
+		(total, ticket) => total + (ticket.ticket_type === "LUBE" ? 0 : ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)),
 		0,
 	);
 	const customerHistoryRevenue = customerVisibleTickets.reduce(
@@ -1189,9 +1213,12 @@ function App() {
 	};
 	const productLabel = (product: Product, index: number) =>
 		String(product.product_name ?? product.name ?? product.title ?? product.id ?? `Product ${index + 1}`);
+	const ticketType = (ticket: Ticket) => ticket.ticket_type === "LUBE" ? "LUBE" : "FUEL";
+	const isLubeTicket = (ticket: Ticket) => ticket.ticket_type === "LUBE";
 	const ticketBusinessName = (ticket: Ticket) =>
 		ticket.business_name ?? "—";
 	const downloadTicketPdf = async (ticket: Ticket) => {
+		const isLubeTicket = ticket.ticket_type === "LUBE";
 		const { jsPDF } = await import("jspdf");
 		const logoResponse = await fetch(gerstnerOilLogoUrl);
 		if (!logoResponse.ok) {
@@ -1252,7 +1279,8 @@ function App() {
 		pdf.text(`Ticket ${formatDetail(ticket.ticket_number)}`, pageWidth - margin, 55, { align: "right" });
 		pdf.setFont("helvetica", "normal");
 		pdf.setFontSize(9);
-		pdf.text(`Created ${formatDate(ticket.created_at)}`, pageWidth - margin, 74, { align: "right" });
+		pdf.text(`Type: ${isLubeTicket ? "LUBE" : "FUEL"}`, pageWidth - margin, 72, { align: "right" });
+		pdf.text(`Created ${formatDate(ticket.created_at)}`, pageWidth - margin, 86, { align: "right" });
 
 		pdf.setDrawColor(222, 231, 225);
 		pdf.line(margin, 195, pageWidth - margin, 195);
@@ -1282,44 +1310,51 @@ function App() {
 			const productBottom = drawField(`Product ${index + 1}`, formatDetail(item.product_name), margin, y, columnWidth);
 			const codeBottom = drawField("Product code", formatDetail(item.product_code), margin + columnWidth + columnGap, y, columnWidth);
 			y = Math.max(productBottom, codeBottom) + 8;
-			const quantityBottom = drawField("Gallons", Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 }), margin, y, itemColumnWidth);
-			const priceBottom = drawField("Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
+			const quantityBottom = drawField(isLubeTicket ? "Quantity" : "Gallons", Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 }), margin, y, itemColumnWidth);
+			const priceBottom = drawField(isLubeTicket ? "Price / unit" : "Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
 			const amountBottom = drawField("Line amount", formatCurrency(item.extended_amount), margin + (itemColumnWidth + itemGap) * 2, y, itemColumnWidth);
 			y = Math.max(quantityBottom, priceBottom, amountBottom) + 8;
-			const federalFuelTaxBottom = drawField(
-				"Federal Fuel Tax Included",
-				`${formatFourDecimalPrice(item.federal_fuel_tax)} per gallon`,
-				margin,
-				y,
-				columnWidth,
-			);
-			const stateFuelTaxBottom = drawField(
-				"State Fuel Tax Included",
-				`${formatFourDecimalPrice(item.state_fuel_tax)} per gallon`,
-				margin + columnWidth + columnGap,
-				y,
-				columnWidth,
-			);
-			y = Math.max(federalFuelTaxBottom, stateFuelTaxBottom) + 8;
+			if (!isLubeTicket) {
+				const federalFuelTaxBottom = drawField(
+					"Federal Fuel Tax Included",
+					`${formatFourDecimalPrice(item.federal_fuel_tax)} per gallon`,
+					margin,
+					y,
+					columnWidth,
+				);
+				const stateFuelTaxBottom = drawField(
+					"State Fuel Tax Included",
+					`${formatFourDecimalPrice(item.state_fuel_tax)} per gallon`,
+					margin + columnWidth + columnGap,
+					y,
+					columnWidth,
+				);
+				y = Math.max(federalFuelTaxBottom, stateFuelTaxBottom) + 8;
+			}
 			const taxableBottom = drawField("Taxable amount", formatCurrency(item.taxable_amount), margin, y, columnWidth);
 			const salesTaxAmountBottom = drawField("Sales tax", formatCurrency(item.sales_tax_amount), margin + columnWidth + columnGap, y, columnWidth);
 			y = Math.max(taxableBottom, salesTaxAmountBottom) + 8;
-			const exciseBottom = drawField("Excise tax code", formatDetail(item.excise_tax_code ?? ticket.excise_tax_code), margin, y, columnWidth);
-			const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
-			y = Math.max(exciseBottom, taxTreatmentBottom) + 14;
+			if (!isLubeTicket) {
+				const exciseBottom = drawField("Excise tax code", formatDetail(item.excise_tax_code ?? ticket.excise_tax_code), margin, y, columnWidth);
+				const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
+				y = Math.max(exciseBottom, taxTreatmentBottom) + 14;
+			} else {
+				const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin, y, columnWidth);
+				y = taxTreatmentBottom + 14;
+			}
 		}
 
 		const statGap = 10;
 		const statWidth = (contentWidth - statGap * 2) / 3;
 		const statHeight = 66;
 		const stats = [
-			["TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
+			[isLubeTicket ? "TOTAL QUANTITY" : "TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
 			["TAXABLE SUBTOTAL", formatCurrency(ticketTaxableSubtotal(ticket))],
 			["SALES TAX", formatCurrency(ticketSalesTaxTotal(ticket))],
 			["INVOICE SUBTOTAL", formatCurrency(ticketInvoiceSubtotal(ticket))],
-			["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))],
+			...(isLubeTicket ? [] : [["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))]]),
 			["NET DUE", formatCurrency(ticketDisplayNetDue(ticket))],
-			["PROMPT PAY AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))],
+			...(isLubeTicket ? [] : [["PROMPT PAY AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))]]),
 		];
 		const statsRows = Math.ceil(stats.length / 3);
 		const statsBlockHeight = statsRows * (statHeight + statGap);
@@ -1327,14 +1362,15 @@ function App() {
 		stats.forEach(([label, value], index) => {
 			const x = margin + (index % 3) * (statWidth + statGap);
 			const yOffset = Math.floor(index / 3) * (statHeight + statGap);
-			pdf.setFillColor(index === 5 ? 235 : 243, index === 5 ? 245 : 248, index === 5 ? 238 : 244);
+			const isTotalStat = index === stats.length - (isLubeTicket ? 1 : 2);
+			pdf.setFillColor(isTotalStat ? 235 : 243, isTotalStat ? 245 : 248, isTotalStat ? 238 : 244);
 			pdf.roundedRect(x, y + yOffset, statWidth, statHeight, 4, 4, "F");
 			pdf.setFont("helvetica", "bold");
 			pdf.setFontSize(8);
 			pdf.setTextColor(101, 124, 111);
 			pdf.text(label, x + 12, y + yOffset + 19);
-			pdf.setFontSize(index === 5 ? 13 : 12);
-			pdf.setTextColor(index === 5 ? 29 : 35, index === 5 ? 105 : 67, index === 5 ? 72 : 53);
+			pdf.setFontSize(isTotalStat ? 13 : 12);
+			pdf.setTextColor(isTotalStat ? 29 : 35, isTotalStat ? 105 : 67, isTotalStat ? 72 : 53);
 			pdf.text(value, x + 12, y + yOffset + 46);
 		});
 		y += statsBlockHeight + 20;
@@ -1346,9 +1382,11 @@ function App() {
 		pdf.setFont("helvetica", "normal");
 		pdf.setFontSize(8);
 		pdf.setTextColor(119, 135, 126);
-		pdf.text("FUEL DESK  |  DELIVERY RECORD", margin, y + 18);
-		pdf.setTextColor(56, 82, 69);
-		pdf.text("Less 7¢ per gallon if paid within 10 days.", margin, y + 34);
+		pdf.text(`${isLubeTicket ? "LUBE" : "FUEL"} DESK  |  DELIVERY RECORD`, margin, y + 18);
+		if (!isLubeTicket) {
+			pdf.setTextColor(56, 82, 69);
+			pdf.text("Less 7¢ per gallon if paid within 10 days.", margin, y + 34);
+		}
 		const filename = String(ticket.ticket_number ?? "delivery-ticket").replace(/[^a-z0-9_-]/gi, "-");
 		pdf.save(`${filename}.pdf`);
 	};
@@ -1521,7 +1559,7 @@ function App() {
 							<article className="summary-card gallons-card">
 								<span className="summary-label">TOTAL GALLONS</span>
 								<strong>{totalGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
-								<span className="summary-note">Across all tickets</span>
+								<span className="summary-note">Fuel tickets only</span>
 							</article>
 							<article className="summary-card revenue-card">
 								<span className="summary-label">TOTAL REVENUE</span>
@@ -1584,7 +1622,10 @@ function App() {
 													<span className="ticket-history-number">Ticket {ticket.ticket_number ?? "—"}</span>
 													<h3>{ticketBusinessName(ticket)}</h3>
 												</div>
-												<button className="view-button" type="button" onClick={() => setSelectedTicket(ticket)}>View ticket</button>
+												<div className="ticket-history-actions">
+													<span className={`ticket-type-badge ${ticketType(ticket).toLowerCase()}`}>{ticketType(ticket)}</span>
+													<button className="view-button" type="button" onClick={() => setSelectedTicket(ticket)}>View ticket</button>
+												</div>
 											</header>
 											<div className="ticket-history-meta">
 												<span><small>Driver</small><strong>{formatDetail(ticket.driver_name)}</strong></span>
@@ -1599,10 +1640,12 @@ function App() {
 															<strong>{formatCurrency(item.extended_amount)}</strong>
 														</div>
 														<div className="ticket-history-product-details">
-															<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} gal × {formatFourDecimalPrice(item.sell_price)}</span>
+															<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}{ticketType(ticket) === "LUBE" ? " × " : " gal × "}{formatFourDecimalPrice(item.sell_price)}</span>
 															<span>Tax treatment: {formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</span>
-															<span>Federal tax: {formatFourDecimalPrice(item.federal_fuel_tax)}/gal</span>
-															<span>State tax: {formatFourDecimalPrice(item.state_fuel_tax)}/gal</span>
+															{ticketType(ticket) === "FUEL" && <>
+																<span>Federal tax: {formatFourDecimalPrice(item.federal_fuel_tax)}/gal</span>
+																<span>State tax: {formatFourDecimalPrice(item.state_fuel_tax)}/gal</span>
+															</>}
 														</div>
 													</div>
 												))}
@@ -1611,9 +1654,9 @@ function App() {
 												<span>Taxable subtotal<strong>{formatCurrency(ticketTaxableSubtotal(ticket))}</strong></span>
 												<span>Sales tax<strong>{formatCurrency(ticketSalesTaxTotal(ticket))}</strong></span>
 												<span>Invoice subtotal<strong>{formatCurrency(ticketInvoiceSubtotal(ticket))}</strong></span>
-												<span>Prompt Pay Discount<strong>{formatCurrency(ticketPromptPayDiscount(ticket))}</strong></span>
+												{ticketType(ticket) === "FUEL" && <span>Prompt Pay Discount<strong>{formatCurrency(ticketPromptPayDiscount(ticket))}</strong></span>}
 												<span className="ticket-history-net-due">Net due<strong>{formatCurrency(ticketDisplayNetDue(ticket))}</strong></span>
-												<span className="ticket-history-net-due">Prompt Pay Amount Due<strong>{formatCurrency(ticketNetAmountDue(ticket))}</strong></span>
+												{ticketType(ticket) === "FUEL" && <span className="ticket-history-net-due">Prompt Pay Amount Due<strong>{formatCurrency(ticketNetAmountDue(ticket))}</strong></span>}
 											</div>
 										</article>
 									))}
@@ -1703,7 +1746,7 @@ function App() {
 									<article className="summary-card gallons-card">
 										<span className="summary-label">TOTAL GALLONS</span>
 										<strong>{customerHistoryGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
-										<span className="summary-note">For selected date range</span>
+										<span className="summary-note">Fuel tickets in selected date range</span>
 									</article>
 									<article className="summary-card revenue-card">
 										<span className="summary-label">TOTAL REVENUE</span>
@@ -1756,6 +1799,7 @@ function App() {
 												<thead>
 													<tr>
 														<th>Ticket number</th>
+														<th>Type</th>
 														<th>Delivery date</th>
 														<th>Driver name</th>
 														<th>Product name</th>
@@ -1781,22 +1825,23 @@ function App() {
 														return lines.map((item, itemIndex) => (
 															<tr key={`${ticket.ticket_number ?? "ticket"}-${ticket.created_at ?? index}-${item.id ?? itemIndex}`}>
 																{itemIndex === 0 && <td className="ticket-number" rowSpan={lines.length}>{ticket.ticket_number ?? "—"}</td>}
+																{itemIndex === 0 && <td rowSpan={lines.length}><span className={`ticket-type-badge ${ticketType(ticket).toLowerCase()}`}>{ticketType(ticket)}</span></td>}
 																{itemIndex === 0 && <td className="date-cell" rowSpan={lines.length}>{ticket.delivery_date ? formatDeliveryDate(ticket.delivery_date) : formatDate(ticket.created_at)}</td>}
 																{itemIndex === 0 && <td rowSpan={lines.length}>{formatDetail(ticket.driver_name)}</td>}
 																<td className="product-cell">{item.product_name ?? "—"}</td>
 																<td>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code)}</td>
 																<td>{ticket.location ?? "—"}</td>
-																<td className="numeric-cell">{formatFourDecimalPrice(item.federal_fuel_tax)}</td>
-																<td className="numeric-cell">{formatFourDecimalPrice(item.state_fuel_tax)}</td>
+																<td className="numeric-cell">{ticketType(ticket) === "LUBE" ? "—" : formatFourDecimalPrice(item.federal_fuel_tax)}</td>
+																<td className="numeric-cell">{ticketType(ticket) === "LUBE" ? "—" : formatFourDecimalPrice(item.state_fuel_tax)}</td>
 																<td className="numeric-cell">{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
 																<td className="numeric-cell">{formatFourDecimalPrice(item.sell_price)}</td>
 																<td className="numeric-cell amount-cell">{formatCurrency(item.extended_amount)}</td>
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketTaxableSubtotal(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketSalesTaxTotal(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketInvoiceSubtotal(ticket))}</td>}
-																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell" rowSpan={lines.length}>{ticketType(ticket) === "LUBE" ? "—" : formatCurrency(ticketPromptPayDiscount(ticket))}</td>}
 																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketDisplayNetDue(ticket))}</td>}
-																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{formatCurrency(ticketNetAmountDue(ticket))}</td>}
+																{itemIndex === 0 && <td className="numeric-cell amount-cell" rowSpan={lines.length}>{ticketType(ticket) === "LUBE" ? "—" : formatCurrency(ticketNetAmountDue(ticket))}</td>}
 																{itemIndex === 0 && (
 																	<td rowSpan={lines.length}>
 																		<button className="view-button" type="button" onClick={() => setSelectedTicket({ ...ticket, business_name: selectedHistoryCustomer.business_name })}>View</button>
@@ -1911,6 +1956,21 @@ function App() {
 							</div>
 						</section>
 					</>
+				) : isLubeTicketPage ? (
+					<LubeTicketPage
+						products={products}
+						customers={customers}
+						driverNames={driverNames}
+						taxCodes={taxCodes}
+						referencesLoading={referencesLoading}
+						referenceError={referenceError}
+						nextTicketNumber={nextTicketNumber}
+						ticketNumberLoading={ticketNumberLoading}
+						ticketNumberError={ticketNumberError}
+						getNextTicketNumber={fetchNextTicketNumber}
+						onTicketNumberUpdated={setNextTicketNumber}
+						onNavigate={navigate}
+					/>
 				) : isCreateTicketPage ? (
 					<>
 						<div className="page-heading">
@@ -2280,6 +2340,9 @@ function App() {
 						<a className="primary-link" href="/ticket-history" onClick={navigate}>
 							Browse Ticket History <span aria-hidden="true">→</span>
 						</a>
+						<a className="primary-link secondary-link" href="/bulk-oil-lubricants" onClick={navigate}>
+							Bulk Oil &amp; Lubricants <span aria-hidden="true">→</span>
+						</a>
 					</section>
 				)}
 			</main>
@@ -2298,6 +2361,7 @@ function App() {
 						aria-labelledby="modal-title"
 					>
 						<div className="ticket-modal-actions" role="group" aria-label="Ticket actions">
+							<span className={`ticket-type-badge ${ticketType(selectedTicket).toLowerCase()}`}>{ticketType(selectedTicket)}</span>
 							<button className="ticket-action-button" type="button" onClick={() => window.print()}>
 								Print Ticket
 							</button>
@@ -2334,6 +2398,7 @@ function App() {
 								</div>
 								<div className="ticket-heading-meta">
 									<h2 id="modal-title">DELIVERY TICKET</h2>
+									<span className={`ticket-type-badge ${ticketType(selectedTicket).toLowerCase()}`}>{ticketType(selectedTicket)}</span>
 									<strong>{formatDetail(selectedTicket.ticket_number)}</strong>
 									<span>Created date: {formatDate(selectedTicket.created_at)}</span>
 								</div>
@@ -2379,11 +2444,11 @@ function App() {
 												</div>
 												<div className="ticket-line-details">
 													<div className="ticket-info-field">
-														<span>Gallons</span>
+														<span>{isLubeTicket(selectedTicket) ? "Quantity" : "Gallons"}</span>
 														<strong>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
 													</div>
 													<div className="ticket-info-field">
-														<span>Price per gallon</span>
+														<span>{isLubeTicket(selectedTicket) ? "Price per unit" : "Price per gallon"}</span>
 														<strong>{formatUnitPrice(item.sell_price)}</strong>
 													</div>
 													<div className="ticket-info-field">
@@ -2400,22 +2465,24 @@ function App() {
 															</div>
 												</div>
 												<div className="ticket-line-details ticket-line-tax-details">
-													<div className="ticket-info-field">
+													{!isLubeTicket(selectedTicket) && <div className="ticket-info-field">
 														<span>Excise Tax Code</span>
 														<strong>{formatDetail(item.excise_tax_code ?? selectedTicket.excise_tax_code)}</strong>
-													</div>
+													</div>}
 													<div className="ticket-info-field">
-																<span>Tax Treatment</span>
-																<strong>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
+														<span>Tax Treatment</span>
+														<strong>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
 													</div>
-													<div className="ticket-info-field">
-																<span>Federal Fuel Tax Included</span>
-																<strong>{formatFourDecimalPrice(item.federal_fuel_tax)} per gallon</strong>
-													</div>
-													<div className="ticket-info-field">
-																<span>State Fuel Tax Included</span>
-																<strong>{formatFourDecimalPrice(item.state_fuel_tax)} per gallon</strong>
-													</div>
+													{!isLubeTicket(selectedTicket) && <>
+														<div className="ticket-info-field">
+															<span>Federal Fuel Tax Included</span>
+															<strong>{formatFourDecimalPrice(item.federal_fuel_tax)} per gallon</strong>
+														</div>
+														<div className="ticket-info-field">
+															<span>State Fuel Tax Included</span>
+															<strong>{formatFourDecimalPrice(item.state_fuel_tax)} per gallon</strong>
+														</div>
+													</>}
 												</div>
 											</article>
 										))}
@@ -2424,7 +2491,7 @@ function App() {
 
 								<section className="ticket-metrics" aria-label="Delivery amounts">
 									<div className="ticket-metric">
-										<span>Total gallons</span>
+										<span>{isLubeTicket(selectedTicket) ? "Total quantity" : "Total gallons"}</span>
 										<strong>{ticketLinesFor(selectedTicket).reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
 									</div>
 									<div className="ticket-metric">
@@ -2439,22 +2506,22 @@ function App() {
 										<span>Invoice subtotal</span>
 										<strong>{formatCurrency(ticketInvoiceSubtotal(selectedTicket))}</strong>
 									</div>
-									<div className="ticket-metric">
+									{!isLubeTicket(selectedTicket) && <div className="ticket-metric">
 										<span>Prompt Pay Discount</span>
 										<strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong>
-									</div>
+									</div>}
 									<div className="ticket-metric total-metric">
 										<span>Net due</span>
 										<strong>{formatCurrency(ticketDisplayNetDue(selectedTicket))}</strong>
 									</div>
-									<div className="ticket-metric total-metric">
+									{!isLubeTicket(selectedTicket) && <div className="ticket-metric total-metric">
 										<span>Prompt Pay Amount Due</span>
 										<strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong>
-									</div>
+									</div>}
 								</section>
 
 								<section className="ticket-tax-grid" aria-label="Tax codes">
-									<p className="ticket-payment-terms">Less 7¢ per gallon if paid within 10 days.</p>
+									{!isLubeTicket(selectedTicket) && <p className="ticket-payment-terms">Less 7¢ per gallon if paid within 10 days.</p>}
 									<div className="ticket-info-field">
 										<span>Created Date</span>
 										<strong>{formatDate(selectedTicket.created_at)}</strong>
@@ -2474,6 +2541,7 @@ function App() {
 
 							<section className="thermal-receipt-details" aria-label="Delivery details">
 								<div><span>Ticket</span><strong>{formatDetail(selectedTicket.ticket_number)}</strong></div>
+								<div><span>Ticket type</span><strong>{ticketType(selectedTicket)}</strong></div>
 								<div><span>Customer</span><strong>{ticketBusinessName(selectedTicket)}</strong></div>
 								<div><span>Driver</span><strong>{formatDetail(selectedTicket.driver_name)}</strong></div>
 								<div><span>Delivery date</span><strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong></div>
@@ -2488,17 +2556,17 @@ function App() {
 											{index + 1}. {formatDetail(item.product_name)}
 										</strong>
 										<div className="thermal-receipt-row">
-											<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })} gal × {formatUnitPrice(item.sell_price)}</span>
+											<span>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}{isLubeTicket(selectedTicket) ? " × " : " gal × "}{formatUnitPrice(item.sell_price)}</span>
 											<strong>{formatCurrency(item.extended_amount)}</strong>
 										</div>
-										<div className="thermal-receipt-disclosure">
+										{!isLubeTicket(selectedTicket) && <div className="thermal-receipt-disclosure">
 											<span>Federal fuel tax included</span>
 											<strong>{formatFourDecimalPrice(item.federal_fuel_tax)}/gal</strong>
-										</div>
-										<div className="thermal-receipt-disclosure">
+										</div>}
+										{!isLubeTicket(selectedTicket) && <div className="thermal-receipt-disclosure">
 											<span>State fuel tax included</span>
 											<strong>{formatFourDecimalPrice(item.state_fuel_tax)}/gal</strong>
-										</div>
+										</div>}
 										<div className="thermal-receipt-disclosure">
 											<span>Sales tax</span>
 											<strong>{formatCurrency(item.sales_tax_amount)}</strong>
@@ -2509,9 +2577,9 @@ function App() {
 
 							<section className="thermal-receipt-totals" aria-label="Receipt totals">
 								<div><span>Sales tax</span><strong>{formatCurrency(ticketSalesTaxTotal(selectedTicket))}</strong></div>
-								<div><span>Discount</span><strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong></div>
+								{!isLubeTicket(selectedTicket) && <div><span>Discount</span><strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong></div>}
 								<div className="thermal-receipt-net"><span>Net due</span><strong>{formatCurrency(ticketDisplayNetDue(selectedTicket))}</strong></div>
-								<div className="thermal-receipt-net"><span>Prompt Pay Amount Due</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>
+								{!isLubeTicket(selectedTicket) && <div className="thermal-receipt-net"><span>Prompt Pay Amount Due</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>}
 							</section>
 							<footer className="thermal-receipt-footer">Thank you for your business.</footer>
 						</article>

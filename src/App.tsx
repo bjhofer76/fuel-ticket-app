@@ -1026,14 +1026,6 @@ function App() {
 			.toLowerCase()
 			.includes(normalizedSearch),
 	);
-	const totalGallons = tickets.reduce(
-		(total, ticket) => total + (ticket.ticket_type === "LUBE" ? 0 : ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.quantity) || 0), 0)),
-		0,
-	);
-	const totalRevenue = tickets.reduce(
-		(total, ticket) => total + ticketLinesFor(ticket).reduce((sum, item) => sum + (Number(item.extended_amount) || 0), 0),
-		0,
-	);
 	const normalizedCustomerSearch = customerSearch.trim().toLowerCase();
 	const filteredHistoryCustomers = historyCustomers.filter((customer) =>
 		(customer.business_name ?? "").toLowerCase().includes(normalizedCustomerSearch),
@@ -1498,16 +1490,23 @@ function App() {
 	return (
 		<div className={`app-shell${isThreeInchTicketPrint ? " printing-thermal-receipt" : ""}`}>
 			<header className="topbar">
-				<a className="brand" href="/create-ticket" onClick={navigate} aria-label="Create ticket">
+				<a className="brand" href="/create-ticket" onClick={navigate} aria-label="Fuel ticket">
 					<img className="brand-logo" src={gerstnerOilLogoSvgUrl} alt="Gerstner Oil Company" />
 				</a>
 				<nav className="main-nav" aria-label="Main navigation">
-						<a
-							href="/create-ticket"
+					<a
+						href="/create-ticket"
 						onClick={navigate}
-							className={isCreateTicketPage ? "nav-link active" : "nav-link"}
+						className={isCreateTicketPage ? "nav-link active" : "nav-link"}
 					>
-							Create Ticket
+						Fuel Ticket
+					</a>
+					<a
+						href="/bulk-oil-lubricants"
+						onClick={navigate}
+						className={isLubeTicketPage ? "nav-link active" : "nav-link"}
+					>
+						Oil Ticket
 					</a>
 					<a
 						href="/ticket-history"
@@ -1549,24 +1548,6 @@ function App() {
 								{tickets.length} {tickets.length === 1 ? "ticket" : "tickets"}
 							</span>
 						</div>
-
-						<section className="summary-grid" aria-label="Ticket summaries">
-							<article className="summary-card">
-								<span className="summary-label">TOTAL TICKETS</span>
-								<strong>{tickets.length.toLocaleString("en-US")}</strong>
-								<span className="summary-note">All recorded deliveries</span>
-							</article>
-							<article className="summary-card gallons-card">
-								<span className="summary-label">TOTAL GALLONS</span>
-								<strong>{totalGallons.toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
-								<span className="summary-note">Fuel tickets only</span>
-							</article>
-							<article className="summary-card revenue-card">
-								<span className="summary-label">TOTAL REVENUE</span>
-								<strong>{formatCurrency(totalRevenue)}</strong>
-								<span className="summary-note">Recorded extended amount</span>
-							</article>
-						</section>
 
 						<section className="ticket-section" aria-label="Delivery tickets">
 							{lineItemsWarning && <p className="line-items-warning" role="alert">{lineItemsWarning}</p>}
@@ -1976,7 +1957,7 @@ function App() {
 						<div className="page-heading">
 							<div>
 								<p className="eyebrow">DELIVERY OPERATIONS / ENTRY</p>
-								<h1>Create Ticket</h1>
+								<h1>Fuel Ticket</h1>
 								<p className="heading-description">Record a new fuel delivery.</p>
 							</div>
 						</div>
@@ -2339,9 +2320,6 @@ function App() {
 						</p>
 						<a className="primary-link" href="/ticket-history" onClick={navigate}>
 							Browse Ticket History <span aria-hidden="true">→</span>
-						</a>
-						<a className="primary-link secondary-link" href="/bulk-oil-lubricants" onClick={navigate}>
-							Bulk Oil &amp; Lubricants <span aria-hidden="true">→</span>
 						</a>
 					</section>
 				)}

@@ -129,7 +129,7 @@ const fetchAllCustomers = async () => {
 	while (true) {
 		const { data, error: queryError } = await supabase
 			.from("customers")
-			.select("id, business_name, nexgen_customer_id, customer_number")
+			.select("id, business_name, nexgen_customer_id, customer_number, billing_address, city, state, zip")
 			.order("id", { ascending: true })
 			.range(offset, offset + customerPageSize - 1);
 		if (queryError) throw new Error(queryError.message);
@@ -233,6 +233,11 @@ const getProductFuelType = (product: Product): FuelType | null => {
 
 const ticketLinesFor = (ticket: Ticket): TicketLine[] =>
 	ticket.items?.length ? ticket.items : [ticket];
+
+const ticketHasDyedProduct = (ticket: Ticket) =>
+	ticketLinesFor(ticket).some((line) => /\bdyed\b/i.test(String(line.product_name ?? "")));
+
+const dyedDieselWarning = "Dyed ULSD, 15 ppm sulfur. NOT for use in highway vehicles and engines.";
 
 const ticketTotalGallons = (ticket: Ticket) =>
 	ticketLinesFor(ticket).reduce((total, item) => total + (Number(item.quantity) || 0), 0);
@@ -490,6 +495,10 @@ function App() {
 						return {
 							...ticket,
 							business_name: customer?.business_name ?? null,
+							billing_address: customer?.billing_address ?? null,
+							billing_city: customer?.city ?? null,
+							billing_state: customer?.state ?? null,
+							billing_zip: customer?.zip ?? null,
 						};
 					}));
 				}
@@ -555,6 +564,10 @@ function App() {
 				setCustomerHistoryTickets(ticketsWithLines.map((ticket) => ({
 					...ticket,
 					business_name: historyCustomer?.business_name ?? null,
+					billing_address: historyCustomer?.billing_address ?? null,
+					billing_city: historyCustomer?.city ?? null,
+					billing_state: historyCustomer?.state ?? null,
+					billing_zip: historyCustomer?.zip ?? null,
 				})));
 			}
 			setCustomerTicketsLoading(false);
@@ -1209,6 +1222,14 @@ function App() {
 	const isLubeTicket = (ticket: Ticket) => ticket.ticket_type === "LUBE";
 	const ticketBusinessName = (ticket: Ticket) =>
 		ticket.business_name ?? "—";
+	const ticketBillingAddressLines = (ticket: Ticket): string[] => {
+		const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+		const street = text(ticket.billing_address);
+		const state = text(ticket.billing_state);
+		const stateZip = [state, text(ticket.billing_zip)].filter(Boolean).join(" ");
+		const cityLine = [text(ticket.billing_city), stateZip].filter(Boolean).join(", ");
+		return [street, cityLine].filter(Boolean);
+	};
 	const downloadTicketPdf = async (ticket: Ticket) => {
 		const isLubeTicket = ticket.ticket_type === "LUBE";
 		const { jsPDF } = await import("jspdf");
@@ -1222,163 +1243,200 @@ function App() {
 		const pageHeight = pdf.internal.pageSize.getHeight();
 		const margin = 44;
 		const contentWidth = pageWidth - margin * 2;
-		const columnGap = 24;
-		const columnWidth = (contentWidth - columnGap) / 2;
-		const drawField = (label: string, value: string, x: number, y: number, width: number) => {
-			pdf.setFont("helvetica", "bold");
-			pdf.setFontSize(8);
-			pdf.setTextColor(111, 132, 121);
-			pdf.text(label.toUpperCase(), x, y);
-			pdf.setFont("helvetica", "normal");
-			pdf.setFontSize(11);
-			pdf.setTextColor(36, 58, 49);
-			const lines = pdf.splitTextToSize(value || "—", width);
-			pdf.text(lines, x, y + 15);
-			return y + 15 + lines.length * 13;
-		};
-		const drawSectionTitle = (title: string, y: number) => {
-			pdf.setFont("helvetica", "bold");
-			pdf.setFontSize(8);
-			pdf.setTextColor(56, 119, 86);
-			pdf.text(title.toUpperCase(), margin, y);
-		};
+		const ink: [number, number, number] = [30, 30, 30];
+		const rule: [number, number, number] = [90, 90, 90];
+		pdf.setDrawColor(...rule);
+		pdf.setLineWidth(0.8);
+		pdf.setTextColor(...ink);
 
-		pdf.setFillColor(255, 255, 255);
-		pdf.rect(0, 0, pageWidth, 205, "F");
-		pdf.addImage(logoData, "PNG", margin, 18, 150, 59.375, "gerstner-oil-logo", "FAST");
-		pdf.setTextColor(36, 58, 49);
-		pdf.setFont("helvetica", "bold");
-		pdf.setFontSize(10);
-		pdf.text(companyInfo.companyName || "FUEL DESK", margin, 94);
-		pdf.setFont("helvetica", "normal");
-		pdf.setFontSize(8);
-		const companyInfoLines = [
-			companyInfo.address.trim() ? `Address: ${companyInfo.address.trim()}` : "",
-			companyCityLine ? `City, State ZIP: ${companyCityLine}` : "",
-			companyInfo.phone.trim() ? `Phone: ${companyInfo.phone.trim()}` : "",
-		].filter(Boolean);
-		let companyInfoY = 106;
-		for (const infoLine of companyInfoLines) {
-			const lines = pdf.splitTextToSize(infoLine, 250);
-			pdf.text(lines, margin, companyInfoY);
-			companyInfoY += lines.length * 11 + 2;
-		}
-		pdf.setFont("helvetica", "bold");
-		pdf.setFontSize(13);
-		pdf.setTextColor(36, 58, 49);
-		pdf.text("DELIVERY TICKET", pageWidth - margin, 36, { align: "right" });
-		pdf.setFontSize(10);
-		pdf.text(`Ticket ${formatDetail(ticket.ticket_number)}`, pageWidth - margin, 55, { align: "right" });
+		pdf.addImage(logoData, "PNG", margin, 28, 150, 59.375, "gerstner-oil-logo", "FAST");
 		pdf.setFont("helvetica", "normal");
 		pdf.setFontSize(9);
-		pdf.text(`Type: ${isLubeTicket ? "LUBE" : "FUEL"}`, pageWidth - margin, 72, { align: "right" });
-		pdf.text(`Created ${formatDate(ticket.created_at)}`, pageWidth - margin, 86, { align: "right" });
+		let companyInfoY = 98;
+		for (const infoLine of [companyInfo.address.trim(), companyCityLine, companyInfo.phone.trim() ? `Ph. ${companyInfo.phone.trim()}` : ""].filter(Boolean)) {
+			pdf.text(infoLine, margin, companyInfoY);
+			companyInfoY += 11;
+		}
+		pdf.setFont("helvetica", "bold");
+		pdf.setFontSize(18);
+		pdf.text(isLubeTicket ? "OIL TICKET" : "FUEL TICKET", pageWidth - margin, 48, { align: "right" });
+		pdf.setFontSize(9);
+		pdf.setFont("helvetica", "normal");
+		pdf.text("TICKET NUMBER", pageWidth - margin, 68, { align: "right" });
+		pdf.setFont("helvetica", "bold");
+		pdf.setFontSize(16);
+		pdf.setTextColor(176, 30, 30);
+		pdf.text(formatDetail(ticket.ticket_number), pageWidth - margin, 88, { align: "right" });
+		pdf.setTextColor(...ink);
 
-		pdf.setDrawColor(222, 231, 225);
-		pdf.line(margin, 195, pageWidth - margin, 195);
-		let y = 215;
+		const drawLineField = (label: string, value: string, x: number, y: number, width: number) => {
+			pdf.setFont("helvetica", "bold");
+			pdf.setFontSize(8);
+			pdf.text(label.toUpperCase(), x, y);
+			const labelWidth = pdf.getTextWidth(label.toUpperCase()) + 6;
+			pdf.setFont("helvetica", "normal");
+			pdf.setFontSize(10.5);
+			const valueLines = (value || "—").split("\n").map((line) => pdf.splitTextToSize(line, width - labelWidth)[0] ?? "");
+			valueLines.forEach((line, lineIndex) => pdf.text(line, x + labelWidth, y - 1 + lineIndex * 12));
+			pdf.setLineWidth(0.5);
+			pdf.line(x + labelWidth - 2, y + 2 + (valueLines.length - 1) * 12, x + width, y + 2 + (valueLines.length - 1) * 12);
+		};
+		let y = 132;
+		pdf.setLineWidth(1.2);
+		pdf.line(margin, y - 8, pageWidth - margin, y - 8);
+		const infoGap = 12;
+		const customerBoxWidth = contentWidth * 0.6;
+		const ticketBoxWidth = contentWidth - customerBoxWidth - infoGap;
+		const ticketBoxX = margin + customerBoxWidth + infoGap;
+		const infoBoxHeight = 84;
+		const boxPadding = 8;
+		const drawInfoBox = (title: string, x: number, width: number, fields: [string, string][]) => {
+			pdf.setLineWidth(0.8);
+			pdf.rect(x, y, width, infoBoxHeight);
+			pdf.setFillColor(238, 238, 238);
+			pdf.rect(x, y, width, 16, "FD");
+			pdf.setFont("helvetica", "bold");
+			pdf.setFontSize(8);
+			pdf.text(title.toUpperCase(), x + boxPadding, y + 11);
+			fields.forEach(([label, value], index) => {
+				drawLineField(label, value, x + boxPadding, y + 34 + index * 21, width - boxPadding * 2);
+			});
+		};
+		drawInfoBox("Customer", margin, customerBoxWidth, [
+			["Sold To", ticketBusinessName(ticket)],
+			["Address", ticketBillingAddressLines(ticket).join("\n") || "—"],
+		]);
+		drawInfoBox("Ticket", ticketBoxX, ticketBoxWidth, [
+			["Ticket No.", formatDetail(ticket.ticket_number)],
+			["Date", formatDeliveryDate(ticket.delivery_date)],
+			["Driver", formatDetail(ticket.driver_name)],
+		]);
+		y += infoBoxHeight + 12;
+
+		const ticketItems = ticketLinesFor(ticket);
+		const columns: { label: string; width: number; align: "left" | "right" }[] = isLubeTicket
+			? [
+				{ label: "PRODUCT", width: 0.46, align: "left" },
+				{ label: "QUAN.", width: 0.16, align: "right" },
+				{ label: "UNIT PRICE", width: 0.18, align: "right" },
+				{ label: "AMOUNT", width: 0.2, align: "right" },
+			]
+			: [
+				{ label: "PRODUCT", width: 0.3, align: "left" },
+				{ label: "GALLONS", width: 0.13, align: "right" },
+				{ label: "STATE TAX", width: 0.13, align: "right" },
+				{ label: "FED. TAX", width: 0.13, align: "right" },
+				{ label: "UNIT PRICE", width: 0.14, align: "right" },
+				{ label: "AMOUNT", width: 0.17, align: "right" },
+			];
+		const columnEdges = columns.reduce<number[]>((edges, column) => [...edges, edges[edges.length - 1] + column.width * contentWidth], [margin]);
+		const rowHeight = 26;
+		const drawGridHeader = () => {
+			pdf.setFillColor(238, 238, 238);
+			pdf.rect(margin, y, contentWidth, 20, "FD");
+			pdf.setFont("helvetica", "bold");
+			pdf.setFontSize(8);
+			columns.forEach((column, index) => {
+				pdf.text(column.label, column.align === "left" ? columnEdges[index] + 6 : columnEdges[index + 1] - 6, y + 13, { align: column.align });
+			});
+			y += 20;
+		};
+		const drawGridRow = (cells: string[], subtext = "") => {
+			pdf.rect(margin, y, contentWidth, rowHeight);
+			columnEdges.slice(1, -1).forEach((edge) => pdf.line(edge, y, edge, y + rowHeight));
+			pdf.setFont("helvetica", "normal");
+			pdf.setFontSize(10);
+			cells.forEach((cell, index) => {
+				const column = columns[index];
+				const text = column.align === "left" ? pdf.splitTextToSize(cell, column.width * contentWidth - 12)[0] ?? "" : cell;
+				pdf.text(text, column.align === "left" ? columnEdges[index] + 6 : columnEdges[index + 1] - 6, y + (subtext && index === 0 ? 11 : 17), { align: column.align });
+			});
+			if (subtext) {
+				pdf.setFontSize(6.5);
+				pdf.text(pdf.splitTextToSize(subtext, columns[0].width * contentWidth - 12)[0] ?? "", columnEdges[0] + 6, y + 21);
+			}
+			y += rowHeight;
+		};
 		const ensurePdfSpace = (height: number) => {
 			if (y + height > pageHeight - margin) {
 				pdf.addPage();
 				y = margin;
+				drawGridHeader();
 			}
 		};
-		drawSectionTitle("Delivery details", y);
-		y += 18;
-		const customerBottom = drawField("Business name", ticketBusinessName(ticket), margin, y, columnWidth);
-		const locationBottom = drawField("Location", formatDetail(ticket.location), margin + columnWidth + columnGap, y, columnWidth);
-		y = Math.max(customerBottom, locationBottom) + 18;
-		const driverBottom = drawField("Driver name", formatDetail(ticket.driver_name), margin, y, columnWidth);
-		const deliveryDateBottom = drawField("Delivery date", formatDeliveryDate(ticket.delivery_date), margin + columnWidth + columnGap, y, columnWidth);
-		y = Math.max(driverBottom, deliveryDateBottom) + 22;
-
-		drawSectionTitle("Product lines", y);
-		y += 18;
-		const ticketItems = ticketLinesFor(ticket);
-		const itemGap = 12;
-		const itemColumnWidth = (contentWidth - itemGap * 2) / 3;
-		for (const [index, item] of ticketItems.entries()) {
-			ensurePdfSpace(190);
-			const productBottom = drawField(`Product ${index + 1}`, formatDetail(item.product_name), margin, y, columnWidth);
-			const codeBottom = drawField("Product code", formatDetail(item.product_code), margin + columnWidth + columnGap, y, columnWidth);
-			y = Math.max(productBottom, codeBottom) + 8;
-			const quantityBottom = drawField(isLubeTicket ? "Quantity" : "Gallons", Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 }), margin, y, itemColumnWidth);
-			const priceBottom = drawField(isLubeTicket ? "Price / unit" : "Price / gallon", formatUnitPrice(item.sell_price), margin + itemColumnWidth + itemGap, y, itemColumnWidth);
-			const amountBottom = drawField("Line amount", formatCurrency(item.extended_amount), margin + (itemColumnWidth + itemGap) * 2, y, itemColumnWidth);
-			y = Math.max(quantityBottom, priceBottom, amountBottom) + 8;
-			if (!isLubeTicket) {
-				const federalFuelTaxBottom = drawField(
-					"Federal Fuel Tax Included",
-					`${formatFourDecimalPrice(item.federal_fuel_tax)} per gallon`,
-					margin,
-					y,
-					columnWidth,
-				);
-				const stateFuelTaxBottom = drawField(
-					"State Fuel Tax Included",
-					`${formatFourDecimalPrice(item.state_fuel_tax)} per gallon`,
-					margin + columnWidth + columnGap,
-					y,
-					columnWidth,
-				);
-				y = Math.max(federalFuelTaxBottom, stateFuelTaxBottom) + 8;
-			}
-			const taxableBottom = drawField("Taxable amount", formatCurrency(item.taxable_amount), margin, y, columnWidth);
-			const salesTaxAmountBottom = drawField("Sales tax", formatCurrency(item.sales_tax_amount), margin + columnWidth + columnGap, y, columnWidth);
-			y = Math.max(taxableBottom, salesTaxAmountBottom) + 8;
-			if (!isLubeTicket) {
-				const exciseBottom = drawField("Excise tax code", formatDetail(item.excise_tax_code ?? ticket.excise_tax_code), margin, y, columnWidth);
-				const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin + columnWidth + columnGap, y, columnWidth);
-				y = Math.max(exciseBottom, taxTreatmentBottom) + 14;
-			} else {
-				const taxTreatmentBottom = drawField("Tax treatment", formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code), margin, y, columnWidth);
-				y = taxTreatmentBottom + 14;
-			}
+		pdf.setLineWidth(0.8);
+		drawGridHeader();
+		for (const item of ticketItems) {
+			ensurePdfSpace(rowHeight);
+			const quantity = Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
+			drawGridRow(
+				isLubeTicket
+					? [formatDetail(item.product_name), quantity, formatUnitPrice(item.sell_price), formatCurrency(item.extended_amount)]
+					: [
+						formatDetail(item.product_name),
+						quantity,
+						formatFourDecimalPrice(item.state_fuel_tax),
+						formatFourDecimalPrice(item.federal_fuel_tax),
+						formatUnitPrice(item.sell_price),
+						formatCurrency(item.extended_amount),
+					],
+				`Code ${formatDetail(item.product_code)} · Tax ${formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? ticket.sales_tax_code)}`,
+			);
+		}
+		for (let blank = ticketItems.length; blank < 3; blank += 1) {
+			ensurePdfSpace(rowHeight);
+			drawGridRow(columns.map(() => ""));
 		}
 
-		const statGap = 10;
-		const statWidth = (contentWidth - statGap * 2) / 3;
-		const statHeight = 66;
-		const stats = [
-			[isLubeTicket ? "TOTAL QUANTITY" : "TOTAL GALLONS", `${ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}`],
-			["TAXABLE SUBTOTAL", formatCurrency(ticketTaxableSubtotal(ticket))],
-			["SALES TAX", formatCurrency(ticketSalesTaxTotal(ticket))],
-			["INVOICE SUBTOTAL", formatCurrency(ticketInvoiceSubtotal(ticket))],
-			...(isLubeTicket ? [] : [["PROMPT PAY DISCOUNT", formatCurrency(ticketPromptPayDiscount(ticket))]]),
-			["NET DUE", formatCurrency(ticketDisplayNetDue(ticket))],
-			...(isLubeTicket ? [] : [["PROMPT PAY AMOUNT DUE", formatCurrency(ticketNetAmountDue(ticket))]]),
+		const totals: [string, string][] = [
+			[isLubeTicket ? "Total Quantity" : "Total Gallons", ticketItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0).toLocaleString("en-US", { maximumFractionDigits: 2 })],
+			["Taxable Subtotal", formatCurrency(ticketTaxableSubtotal(ticket))],
+			["Sales Tax", formatCurrency(ticketSalesTaxTotal(ticket))],
+			["Invoice Subtotal", formatCurrency(ticketInvoiceSubtotal(ticket))],
+			...(isLubeTicket ? [] : [["Prompt Pay Discount", formatCurrency(ticketPromptPayDiscount(ticket))] as [string, string]]),
+			["Net Due / Total", formatCurrency(ticketDisplayNetDue(ticket))],
+			...(isLubeTicket ? [] : [["Prompt Pay Amount Due", formatCurrency(ticketNetAmountDue(ticket))] as [string, string]]),
 		];
-		const statsRows = Math.ceil(stats.length / 3);
-		const statsBlockHeight = statsRows * (statHeight + statGap);
-		ensurePdfSpace(statsBlockHeight + 20);
-		stats.forEach(([label, value], index) => {
-			const x = margin + (index % 3) * (statWidth + statGap);
-			const yOffset = Math.floor(index / 3) * (statHeight + statGap);
-			const isTotalStat = index === stats.length - (isLubeTicket ? 1 : 2);
-			pdf.setFillColor(isTotalStat ? 235 : 243, isTotalStat ? 245 : 248, isTotalStat ? 238 : 244);
-			pdf.roundedRect(x, y + yOffset, statWidth, statHeight, 4, 4, "F");
+		const hasDyed = ticketHasDyedProduct(ticket);
+		const totalsHeight = totals.length * 18;
+		ensurePdfSpace(Math.max(totalsHeight, 70) + 70);
+		const totalsWidth = 230;
+		const totalsX = pageWidth - margin - totalsWidth;
+		const totalsTop = y;
+		pdf.setFontSize(9);
+		totals.forEach(([label, value], index) => {
+			const rowY = totalsTop + index * 18;
+			const isNet = label.startsWith("Net Due");
+			pdf.rect(totalsX, rowY, totalsWidth, 18);
+			pdf.setFont("helvetica", isNet ? "bold" : "normal");
+			pdf.text(label.toUpperCase(), totalsX + 6, rowY + 12);
+			pdf.text(value, totalsX + totalsWidth - 6, rowY + 12, { align: "right" });
+		});
+		const noticeWidth = totalsX - margin - 16;
+		let noticeY = totalsTop + 12;
+		if (hasDyed) {
+			pdf.setFont("helvetica", "bold");
+			pdf.setFontSize(11);
+			const warningLines = pdf.splitTextToSize(dyedDieselWarning, noticeWidth - 16);
+			pdf.rect(margin, totalsTop, noticeWidth, warningLines.length * 14 + 14);
+			pdf.text(warningLines, margin + 8, noticeY + 6);
+			noticeY += warningLines.length * 14 + 22;
+		}
+		if (!isLubeTicket) {
 			pdf.setFont("helvetica", "bold");
 			pdf.setFontSize(8);
-			pdf.setTextColor(101, 124, 111);
-			pdf.text(label, x + 12, y + yOffset + 19);
-			pdf.setFontSize(isTotalStat ? 13 : 12);
-			pdf.setTextColor(isTotalStat ? 29 : 35, isTotalStat ? 105 : 67, isTotalStat ? 72 : 53);
-			pdf.text(value, x + 12, y + yOffset + 46);
-		});
-		y += statsBlockHeight + 20;
-
-		ensurePdfSpace(58);
-		y += 8;
-		pdf.setDrawColor(222, 231, 225);
-		pdf.line(margin, y, pageWidth - margin, y);
-		pdf.setFont("helvetica", "normal");
-		pdf.setFontSize(8);
-		pdf.setTextColor(119, 135, 126);
-		pdf.text(`${isLubeTicket ? "LUBE" : "FUEL"} DESK  |  DELIVERY RECORD`, margin, y + 18);
-		if (!isLubeTicket) {
-			pdf.setTextColor(56, 82, 69);
-			pdf.text("Less 7¢ per gallon if paid within 10 days.", margin, y + 34);
+			pdf.text("Less 7¢ per gallon if paid within 10 days.", margin, Math.max(noticeY, totalsTop + 12));
 		}
+		y = totalsTop + Math.max(totalsHeight, 70) + 36;
+		ensurePdfSpace(60);
+		pdf.setFont("helvetica", "bold");
+		pdf.setFontSize(8);
+		const signatureWidth = (contentWidth - 40) / 2;
+		pdf.setLineWidth(0.6);
+		pdf.line(margin, y, margin + signatureWidth, y);
+		pdf.text("DELIVERED BY", margin, y + 12);
+		pdf.line(margin + signatureWidth + 40, y, pageWidth - margin, y);
+		pdf.text("RECEIVED BY", margin + signatureWidth + 40, y + 12);
 		const filename = String(ticket.ticket_number ?? "delivery-ticket").replace(/[^a-z0-9_-]/gi, "-");
 		pdf.save(`${filename}.pdf`);
 	};
@@ -2375,96 +2433,85 @@ function App() {
 									</div>
 								</div>
 								<div className="ticket-heading-meta">
-									<h2 id="modal-title">DELIVERY TICKET</h2>
-									<span className={`ticket-type-badge ${ticketType(selectedTicket).toLowerCase()}`}>{ticketType(selectedTicket)}</span>
+									<h2 id="modal-title">{isLubeTicket(selectedTicket) ? "OIL TICKET" : "FUEL TICKET"}</h2>
+									<span>Ticket Number</span>
 									<strong>{formatDetail(selectedTicket.ticket_number)}</strong>
-									<span>Created date: {formatDate(selectedTicket.created_at)}</span>
 								</div>
 							</header>
 							<div className="ticket-paper-body">
 								<section className="ticket-info-grid" aria-label="Ticket and customer information">
-									<div className="ticket-info-field">
-										<span>Ticket Number</span>
-										<strong>{formatDetail(selectedTicket.ticket_number)}</strong>
+									<div className="ticket-info-box">
+										<h3>Customer</h3>
+										<div className="ticket-info-field">
+											<span>Sold To</span>
+											<strong>{ticketBusinessName(selectedTicket)}</strong>
+										</div>
+										<div className="ticket-info-field">
+											<span>Address</span>
+											<strong>
+												{ticketBillingAddressLines(selectedTicket).length
+													? ticketBillingAddressLines(selectedTicket).map((line) => <span className="ticket-address-line" key={line}>{line}</span>)
+													: "—"}
+											</strong>
+										</div>
 									</div>
-									<div className="ticket-info-field">
-										<span>Business Name</span>
-										<strong>{ticketBusinessName(selectedTicket)}</strong>
-									</div>
-					<div className="ticket-info-field">
-						<span>Driver Name</span>
-						<strong>{formatDetail(selectedTicket.driver_name)}</strong>
-					</div>
-					<div className="ticket-info-field">
-						<span>Delivery Date</span>
-						<strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong>
-					</div>
-									<div className="ticket-info-field full-field">
-										<span>Location</span>
-										<strong>{formatDetail(selectedTicket.location)}</strong>
+									<div className="ticket-info-box">
+										<h3>Ticket</h3>
+										<div className="ticket-info-field">
+											<span>Ticket No.</span>
+											<strong>{formatDetail(selectedTicket.ticket_number)}</strong>
+										</div>
+										<div className="ticket-info-field">
+											<span>Date</span>
+											<strong>{formatDeliveryDate(selectedTicket.delivery_date)}</strong>
+										</div>
+										<div className="ticket-info-field">
+											<span>Driver</span>
+											<strong>{formatDetail(selectedTicket.driver_name)}</strong>
+										</div>
 									</div>
 								</section>
 
 								<section className="ticket-product-section" aria-label="Product information">
-									<p className="ticket-section-label">Product lines</p>
-									<div className="ticket-line-list">
-										{ticketLinesFor(selectedTicket).map((item, index) => (
-											<article className="ticket-line-card" key={`${item.id ?? index}-${index}`}>
-												<div className="ticket-line-title">
-													<div className="ticket-info-field">
-														<span>Product {index + 1}</span>
-														<strong>{formatDetail(item.product_name)}</strong>
-													</div>
-													<div className="ticket-info-field">
-														<span>Product Code</span>
-														<strong>{formatDetail(item.product_code)}</strong>
-													</div>
-												</div>
-												<div className="ticket-line-details">
-													<div className="ticket-info-field">
-														<span>{isLubeTicket(selectedTicket) ? "Quantity" : "Gallons"}</span>
-														<strong>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</strong>
-													</div>
-													<div className="ticket-info-field">
-														<span>{isLubeTicket(selectedTicket) ? "Price per unit" : "Price per gallon"}</span>
-														<strong>{formatUnitPrice(item.sell_price)}</strong>
-													</div>
-													<div className="ticket-info-field">
-														<span>Line amount</span>
-														<strong>{formatCurrency(item.extended_amount)}</strong>
-													</div>
-															<div className="ticket-info-field">
-																<span>Taxable amount</span>
-																<strong>{formatCurrency(item.taxable_amount)}</strong>
-															</div>
-															<div className="ticket-info-field">
-																<span>Sales tax</span>
-																<strong>{formatCurrency(item.sales_tax_amount)}</strong>
-															</div>
-												</div>
-												<div className="ticket-line-details ticket-line-tax-details">
-													{!isLubeTicket(selectedTicket) && <div className="ticket-info-field">
-														<span>Excise Tax Code</span>
-														<strong>{formatDetail(item.excise_tax_code ?? selectedTicket.excise_tax_code)}</strong>
-													</div>}
-													<div className="ticket-info-field">
-														<span>Tax Treatment</span>
-														<strong>{formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}</strong>
-													</div>
-													{!isLubeTicket(selectedTicket) && <>
-														<div className="ticket-info-field">
-															<span>Federal Fuel Tax Included</span>
-															<strong>{formatFourDecimalPrice(item.federal_fuel_tax)} per gallon</strong>
-														</div>
-														<div className="ticket-info-field">
-															<span>State Fuel Tax Included</span>
-															<strong>{formatFourDecimalPrice(item.state_fuel_tax)} per gallon</strong>
-														</div>
-													</>}
-												</div>
-											</article>
-										))}
-									</div>
+									<table className={`ticket-product-grid${isLubeTicket(selectedTicket) ? " lube-grid" : ""}`}>
+										<thead>
+											<tr>
+												<th className="grid-product">Product</th>
+												<th>{isLubeTicket(selectedTicket) ? "Quan." : "Gallons"}</th>
+												{!isLubeTicket(selectedTicket) && <th>State Tax</th>}
+												{!isLubeTicket(selectedTicket) && <th>Fed. Tax</th>}
+												<th>Unit Price</th>
+												<th>Amount</th>
+											</tr>
+										</thead>
+										<tbody>
+											{ticketLinesFor(selectedTicket).map((item, index) => (
+												<tr key={`${item.id ?? index}-${index}`}>
+													<td className="grid-product">
+														{formatDetail(item.product_name)}
+														<small>
+															Code {formatDetail(item.product_code)} · Tax {formatDetail(item.sales_tax_treatment ?? item.sales_tax_code ?? selectedTicket.sales_tax_code)}
+														</small>
+													</td>
+													<td>{Number(item.quantity || 0).toLocaleString("en-US", { maximumFractionDigits: 2 })}</td>
+													{!isLubeTicket(selectedTicket) && <td>{formatFourDecimalPrice(item.state_fuel_tax)}</td>}
+													{!isLubeTicket(selectedTicket) && <td>{formatFourDecimalPrice(item.federal_fuel_tax)}</td>}
+													<td>{formatUnitPrice(item.sell_price)}</td>
+													<td>{formatCurrency(item.extended_amount)}</td>
+												</tr>
+											))}
+											{Array.from({ length: Math.max(0, 3 - ticketLinesFor(selectedTicket).length) }).map((_, index) => (
+												<tr className="grid-blank-row" key={`blank-${index}`} aria-hidden="true">
+													<td className="grid-product">&nbsp;</td>
+													<td />
+													{!isLubeTicket(selectedTicket) && <td />}
+													{!isLubeTicket(selectedTicket) && <td />}
+													<td />
+													<td />
+												</tr>
+											))}
+										</tbody>
+									</table>
 								</section>
 
 								<section className="ticket-metrics" aria-label="Delivery amounts">
@@ -2498,12 +2545,14 @@ function App() {
 									</div>}
 								</section>
 
-								<section className="ticket-tax-grid" aria-label="Tax codes">
+								<section className="ticket-terms-row" aria-label="Terms and notices">
 									{!isLubeTicket(selectedTicket) && <p className="ticket-payment-terms">Less 7¢ per gallon if paid within 10 days.</p>}
-									<div className="ticket-info-field">
-										<span>Created Date</span>
-										<strong>{formatDate(selectedTicket.created_at)}</strong>
-									</div>
+									{ticketHasDyedProduct(selectedTicket) && <p className="ticket-dyed-warning">{dyedDieselWarning}</p>}
+								</section>
+
+								<section className="ticket-signatures" aria-label="Signatures">
+									<div><span>Delivered By</span></div>
+									<div><span>Received By</span></div>
 								</section>
 							</div>
 						</article>

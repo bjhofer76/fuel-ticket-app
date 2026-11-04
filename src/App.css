@@ -3011,6 +3011,57 @@ a {
   display: block;
 }
 
+.ticket-type-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ticket-type-tab {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1px solid #d5dfe8;
+  border-radius: 8px;
+  background: #fff;
+  color: #33485e;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.ticket-type-tab:hover {
+  border-color: #102b49;
+  color: #102b49;
+}
+
+.ticket-type-tab.active {
+  border-color: #102b49;
+  background: #102b49;
+  color: #fff;
+}
+
+.ticket-type-tab:focus-visible {
+  outline: 2px solid #102b49;
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .ticket-type-tabs {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .ticket-type-tab {
+    min-height: 48px;
+    padding: 0 10px;
+    font-size: 14px;
+  }
+}
+
 .home-screen {
   min-height: auto;
   border-left: 0;

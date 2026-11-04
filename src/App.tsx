@@ -370,6 +370,7 @@ function App() {
 	const [historyCustomers, setHistoryCustomers] = useState<Customer[]>([]);
 	const [customerHistoryTickets, setCustomerHistoryTickets] = useState<Ticket[]>([]);
 	const [search, setSearch] = useState("");
+	const [ticketTypeFilter, setTicketTypeFilter] = useState<"FUEL" | "LUBE">("FUEL");
 	const [customerSearch, setCustomerSearch] = useState("");
 	const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
 	const [isThreeInchTicketPrint, setIsThreeInchTicketPrint] = useState(false);
@@ -1035,11 +1036,13 @@ function App() {
 	const hasUnsavedPricingChanges = pricingProducts.some((product, index) =>
 		hasPriceChanged(product, pricingDraftPrices[index] ?? ""),
 	);
-	const filteredTickets = tickets.filter((ticket) =>
-		`${ticket.ticket_number ?? ""} ${ticketLinesFor(ticket).map((item) => item.product_name ?? "").join(" ")}`
+	const filteredTickets = tickets.filter((ticket) => {
+		const type = ticket.ticket_type === "LUBE" ? "LUBE" : "FUEL";
+		if (type !== ticketTypeFilter) return false;
+		return `${ticket.ticket_number ?? ""} ${ticketLinesFor(ticket).map((item) => item.product_name ?? "").join(" ")}`
 			.toLowerCase()
-			.includes(normalizedSearch),
-	);
+			.includes(normalizedSearch);
+	});
 	const normalizedCustomerSearch = customerSearch.trim().toLowerCase();
 	const filteredHistoryCustomers = historyCustomers.filter((customer) =>
 		(customer.business_name ?? "").toLowerCase().includes(normalizedCustomerSearch),
@@ -1659,6 +1662,22 @@ function App() {
 								<div>
 									<h2>All tickets</h2>
 									<p>Newest deliveries appear first</p>
+								</div>
+								<div className="ticket-type-tabs" role="group" aria-label="Filter tickets by type">
+									<button
+										type="button"
+										className={ticketTypeFilter === "FUEL" ? "ticket-type-tab active" : "ticket-type-tab"}
+										onClick={() => setTicketTypeFilter("FUEL")}
+									>
+										Fuel Tickets
+									</button>
+									<button
+										type="button"
+										className={ticketTypeFilter === "LUBE" ? "ticket-type-tab active" : "ticket-type-tab"}
+										onClick={() => setTicketTypeFilter("LUBE")}
+									>
+										Oil Tickets
+									</button>
 								</div>
 								<label className="search-box">
 									<span className="search-icon" aria-hidden="true">⌕</span>

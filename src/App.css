@@ -3010,3 +3010,103 @@ a {
 .ticket-address-line {
   display: block;
 }
+
+.home-screen {
+  min-height: auto;
+  border-left: 0;
+  border-radius: 12px;
+}
+
+.home-actions {
+  max-width: 900px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+}
+
+.home-action {
+  min-height: 88px;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-sizing: border-box;
+  border: 1px solid #dce4ec;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(16 43 73 / 4%);
+  color: #102b49;
+  text-decoration: none;
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+
+.home-action:hover {
+  border-color: #d5a84b;
+  box-shadow: 0 8px 20px rgb(16 43 73 / 10%);
+  transform: translateY(-2px);
+}
+
+.home-action:focus-visible {
+  outline: 2px solid #102b49;
+  outline-offset: 2px;
+}
+
+.home-action-icon {
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: #102b49;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.home-action-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.home-action-text strong {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.home-action-text span {
+  color: #66798d;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.home-action-arrow {
+  margin-left: auto;
+  padding-left: 10px;
+  color: #d5a84b;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .home-screen {
+    padding: 28px 20px;
+  }
+
+  .home-actions {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .home-action {
+    min-height: 64px;
+    padding: 16px;
+  }
+
+  .home-action-icon {
+    width: 42px;
+    height: 42px;
+    font-size: 19px;
+  }
+}

@@ -403,6 +403,7 @@ function App() {
 	const [formMessage, setFormMessage] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
+	const isHomePage = path === "/";
 	const isHistoryPage = path === "/ticket-history";
 	const isCustomerHistoryPage = path === "/customer-history";
 	const isCreateTicketPage = path === "/create-ticket";
@@ -1548,7 +1549,7 @@ function App() {
 	return (
 		<div className={`app-shell${isThreeInchTicketPrint ? " printing-thermal-receipt" : ""}`}>
 			<header className="topbar">
-				<a className="brand" href="/create-ticket" onClick={navigate} aria-label="Fuel ticket">
+				<a className="brand" href="/" onClick={navigate} aria-label="Home">
 					<img className="brand-logo" src={gerstnerOilLogoSvgUrl} alt="Gerstner Oil Company" />
 				</a>
 				<nav className="main-nav" aria-label="Main navigation">
@@ -1592,7 +1593,52 @@ function App() {
 			</header>
 
 			<main className="page-content">
-				{isHistoryPage ? (
+				{isHomePage ? (
+					<section className="home-panel home-screen" aria-label="Home">
+						<div className="home-actions">
+							<a className="home-action" href="/create-ticket" onClick={navigate}>
+								<span className="home-action-icon" aria-hidden="true">⛽</span>
+								<span className="home-action-text">
+									<strong>New Fuel Ticket</strong>
+									<span>Record a new fuel delivery</span>
+								</span>
+								<span className="home-action-arrow" aria-hidden="true">→</span>
+							</a>
+							<a className="home-action" href="/bulk-oil-lubricants" onClick={navigate}>
+								<span className="home-action-icon" aria-hidden="true">🛢️</span>
+								<span className="home-action-text">
+									<strong>New Oil Ticket</strong>
+									<span>Record a new oil or lubricant delivery</span>
+								</span>
+								<span className="home-action-arrow" aria-hidden="true">→</span>
+							</a>
+							<a className="home-action" href="/ticket-history" onClick={navigate}>
+								<span className="home-action-icon" aria-hidden="true">🧾</span>
+								<span className="home-action-text">
+									<strong>Ticket History</strong>
+									<span>Review past delivery tickets</span>
+								</span>
+								<span className="home-action-arrow" aria-hidden="true">→</span>
+							</a>
+							<a className="home-action" href="/customer-history" onClick={navigate}>
+								<span className="home-action-icon" aria-hidden="true">👥</span>
+								<span className="home-action-text">
+									<strong>Customer History</strong>
+									<span>Look up customer delivery history</span>
+								</span>
+								<span className="home-action-arrow" aria-hidden="true">→</span>
+							</a>
+							<a className="home-action" href="/admin/pricing" onClick={navigate}>
+								<span className="home-action-icon" aria-hidden="true">🏷️</span>
+								<span className="home-action-text">
+									<strong>Product Pricing</strong>
+									<span>Review and update product prices</span>
+								</span>
+								<span className="home-action-arrow" aria-hidden="true">→</span>
+							</a>
+						</div>
+					</section>
+				) : isHistoryPage ? (
 					<>
 						<div className="page-heading">
 							<div>

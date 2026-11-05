@@ -7,6 +7,7 @@
  */
 
 const ZEBRA_PARSER_SERVICE_UUID = "38eb4a80-c570-11e3-9507-0002a5d5c51b";
+const ZEBRA_FROM_PRINTER_CHARACTERISTIC_UUID = "38eb4a81-c570-11e3-9507-0002a5d5c51b";
 const ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID = "38eb4a82-c570-11e3-9507-0002a5d5c51b";
 const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 
@@ -122,6 +123,53 @@ export const printElementToZebra = async (element: HTMLElement) => {
 		const service = await server.getPrimaryService(ZEBRA_PARSER_SERVICE_UUID);
 		const characteristic = await service.getCharacteristic(ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID);
 		await writeToPrinter(device, characteristic, payload);
+	} finally {
+		server.disconnect();
+	}
+};
+
+/**
+ * Asks the printer for its host status and device errors over BLE and returns
+ * the raw responses, so we can see whether it is in ZPL mode and whether it is
+ * reporting a fault (head open, out of paper, etc.).
+ */
+export const queryZebraStatus = async (): Promise<string> => {
+	if (!isZebraPrintSupported()) {
+		throw new Error("This browser does not support direct Zebra printing. Use Chrome on Android.");
+	}
+
+	const device = await navigator.bluetooth.requestDevice({
+		filters: [{ services: [ZEBRA_ADVERTISED_SERVICE_UUID] }],
+		optionalServices: [ZEBRA_PARSER_SERVICE_UUID],
+	});
+	if (!device.gatt) throw new Error("The selected device does not support Bluetooth LE printing.");
+
+	const server = await device.gatt.connect();
+	try {
+		const service = await server.getPrimaryService(ZEBRA_PARSER_SERVICE_UUID);
+		const toPrinter = await service.getCharacteristic(ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID);
+		const fromPrinter = await service.getCharacteristic(ZEBRA_FROM_PRINTER_CHARACTERISTIC_UUID);
+
+		const chunks: string[] = [];
+		const decoder = new TextDecoder();
+		const onData = (event: Event) => {
+			const target = event.target as BluetoothRemoteGATTCharacteristic;
+			if (target.value) chunks.push(decoder.decode(target.value));
+		};
+		fromPrinter.addEventListener("characteristicvaluechanged", onData);
+		await fromPrinter.startNotifications();
+
+		// ~HS = host status, ~ES = device errors. Both answer on the parser port.
+		const query: Uint8Array<ArrayBuffer> = new TextEncoder().encode("~HS\n~ES\n");
+		await writeToPrinter(device, toPrinter, query);
+
+		// Give the printer a moment to answer.
+		await delay(1500);
+		await fromPrinter.stopNotifications();
+		fromPrinter.removeEventListener("characteristicvaluechanged", onData);
+
+		const response = chunks.join("").trim();
+		return response || "(the printer did not answer — it may not be in ZPL mode)";
 	} finally {
 		server.disconnect();
 	}

@@ -14,6 +14,11 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
+/** The printer cannot print the last few dots on the right edge, so render the
+    receipt into a slightly narrower area centered on the full-width canvas.
+    This keeps right-aligned amounts from being clipped. */
+const PRINTABLE_WIDTH_DOTS = 560;
+
 /** BLE write payload. Larger writes mean fewer BLE round-trips, which is the
     dominant cost. The ZQ320's parser buffer is small, so we pair big writes
     with a short pause to let it drain and avoid garbled output. */
@@ -155,10 +160,22 @@ export const printElementToZebra = async (element: HTMLElement) => {
 	);
 
 	const { default: html2canvas } = await import("html2canvas");
-	const rendered = await html2canvas(element, {
+	const captured = await html2canvas(element, {
 		backgroundColor: "#ffffff",
-		scale: PRINTER_WIDTH_DOTS / element.offsetWidth,
+		scale: PRINTABLE_WIDTH_DOTS / element.offsetWidth,
 	});
+
+	// Center the narrower capture on a full-width canvas so the right edge of
+	// the content sits inside the printable area (avoids clipped characters).
+	const rendered = document.createElement("canvas");
+	rendered.width = PRINTER_WIDTH_DOTS;
+	rendered.height = captured.height;
+	const ctx = rendered.getContext("2d");
+	if (!ctx) throw new Error("Unable to prepare the receipt image for printing.");
+	ctx.fillStyle = "#ffffff";
+	ctx.fillRect(0, 0, rendered.width, rendered.height);
+	const xOffset = Math.floor((PRINTER_WIDTH_DOTS - captured.width) / 2);
+	ctx.drawImage(captured, xOffset, 0);
 
 	const zpl = canvasToZpl(rendered);
 	if (!zpl) throw new Error("The receipt rendered as a blank image.");

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { companyCityLine, companyInfo } from "./lib/company-settings";
+import { isZebraPrintSupported, printElementToZebra } from "./lib/zebra-print";
 import { LubeTicketPage } from "./LubeTicketPage";
 import gerstnerOilLogoUrl from "./assets/gerstner-oil-logo.png";
 import gerstnerOilLogoSvgUrl from "./assets/gerstner-oil-logo.svg";
@@ -375,6 +376,9 @@ function App() {
 	const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
 	const [isThreeInchTicketPrint, setIsThreeInchTicketPrint] = useState(false);
 	const [ticketPdfError, setTicketPdfError] = useState("");
+	const [zebraPrintError, setZebraPrintError] = useState("");
+	const [zebraPrinting, setZebraPrinting] = useState(false);
+	const thermalReceiptRef = useRef<HTMLElement | null>(null);
 	const [selectedHistoryCustomerId, setSelectedHistoryCustomerId] = useState("");
 	const [deliveryDateFilter, setDeliveryDateFilter] = useState<DeliveryDateFilter>("all");
 	const [historyCustomersLoading, setHistoryCustomersLoading] = useState(false);
@@ -1444,6 +1448,22 @@ function App() {
 		const filename = String(ticket.ticket_number ?? "delivery-ticket").replace(/[^a-z0-9_-]/gi, "-");
 		pdf.save(`${filename}.pdf`);
 	};
+	const printReceiptToZebra = async () => {
+		const receipt = thermalReceiptRef.current;
+		if (!receipt || zebraPrinting) return;
+		setZebraPrintError("");
+		setZebraPrinting(true);
+		receipt.classList.add("thermal-receipt-capture");
+		try {
+			await printElementToZebra(receipt);
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "NotFoundError") return; // user cancelled the device picker
+			setZebraPrintError(error instanceof Error ? error.message : "Unable to print to the Zebra printer.");
+		} finally {
+			receipt.classList.remove("thermal-receipt-capture");
+			setZebraPrinting(false);
+		}
+	};
 	const createTicket = async (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (
@@ -2469,6 +2489,11 @@ function App() {
 							<button className="ticket-action-button" type="button" onClick={() => setIsThreeInchTicketPrint(true)}>
 								Print Receipt
 							</button>
+							{isZebraPrintSupported() && (
+								<button className="ticket-action-button" type="button" disabled={zebraPrinting} onClick={() => void printReceiptToZebra()}>
+									{zebraPrinting ? "Printing…" : "Print to Zebra"}
+								</button>
+							)}
 							<button
 								className="ticket-action-button primary-action"
 								type="button"
@@ -2486,6 +2511,7 @@ function App() {
 							</button>
 						</div>
 						{ticketPdfError && <p className="ticket-pdf-error" role="alert">{ticketPdfError}</p>}
+						{zebraPrintError && <p className="ticket-pdf-error" role="alert">{zebraPrintError}</p>}
 						<article className="ticket-print-content">
 							<header className="ticket-paper-header">
 								<div className="ticket-company">
@@ -2621,7 +2647,7 @@ function App() {
 								</section>
 							</div>
 						</article>
-						<article className="thermal-receipt" aria-label="Thermal delivery receipt">
+						<article className="thermal-receipt" ref={thermalReceiptRef} aria-label="Thermal delivery receipt">
 							<header className="thermal-receipt-header">
 								<img className="thermal-receipt-logo" src={gerstnerOilLogoUrl} alt="Gerstner Oil Company" />
 								<strong>{companyInfo.companyName || "FUEL DESK"}</strong>

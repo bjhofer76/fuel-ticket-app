@@ -1180,6 +1180,27 @@ tbody tr:hover {
   display: none;
 }
 
+/* While capturing for direct Zebra printing, the receipt is laid out at its
+   physical width but parked off-screen so html2canvas can rasterize it.
+   (html2canvas skips painting elements hidden with visibility/opacity.) */
+.thermal-receipt-capture {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  z-index: -1;
+  pointer-events: none;
+  box-sizing: border-box;
+  width: 2.84in;
+  margin: 0;
+  padding: 0;
+  color: #000;
+  background: #fff;
+  font-family: "Courier New", monospace;
+  font-size: 8pt;
+  line-height: 1.3;
+}
+
 .ticket-paper-header {
   min-height: 190px;
   padding: 23px 28px;

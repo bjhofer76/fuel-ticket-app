@@ -13,11 +13,12 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
-/** Conservative BLE write payload; works even when the negotiated MTU is small. */
-const BLE_CHUNK_SIZE = 180;
+/** Conservative BLE write payload; the ZQ320 negotiates a small MTU, and large
+    writes can stall or drop the link mid-print. */
+const BLE_CHUNK_SIZE = 100;
 
 /** Delay between BLE writes so the printer's parser buffer is not overrun. */
-const BLE_WRITE_DELAY_MS = 25;
+const BLE_WRITE_DELAY_MS = 60;
 
 export const isZebraPrintSupported = () =>
 	typeof navigator !== "undefined" && typeof navigator.bluetooth !== "undefined";
@@ -27,10 +28,10 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const toHex = (value: number, width: number) => value.toString(16).toUpperCase().padStart(width, "0");
 
 /**
- * Converts a canvas to a monochrome ZPL graphic field (^GFA) sized for the
- * printer. Pixels darker than the threshold become print dots.
+ * Converts a canvas to monochrome bitmap rows (hex strings), one per pixel row.
+ * Pixels darker than the threshold become print dots.
  */
-const canvasToZplGraphic = (canvas: HTMLCanvasElement): string => {
+const canvasToBitmapRows = (canvas: HTMLCanvasElement) => {
 	const context = canvas.getContext("2d");
 	if (!context) throw new Error("Unable to read the rendered receipt image.");
 
@@ -56,11 +57,33 @@ const canvasToZplGraphic = (canvas: HTMLCanvasElement): string => {
 	}
 
 	const totalBytes = bytesPerRow * height;
-	return `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${rows.join("")}`;
+	return { bytesPerRow, rows, totalBytes };
 };
 
-const writeToPrinter = async (characteristic: BluetoothRemoteGATTCharacteristic, payload: Uint8Array<ArrayBuffer>) => {
+/** Drops blank rows from the bottom of the bitmap so we send less data over BLE. */
+const trimBlankRows = (rows: string[], bytesPerRow: number) => {
+	const blankRow = "0".repeat(bytesPerRow * 2);
+	let end = rows.length;
+	while (end > 0 && rows[end - 1] === blankRow) end -= 1;
+	return rows.slice(0, end);
+};
+
+const canvasToZplGraphic = (canvas: HTMLCanvasElement): string => {
+	const { bytesPerRow, rows } = canvasToBitmapRows(canvas);
+	const trimmed = trimBlankRows(rows, bytesPerRow);
+	const totalBytes = bytesPerRow * trimmed.length;
+	return `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${trimmed.join("")}`;
+};
+
+const writeToPrinter = async (
+	device: BluetoothDevice,
+	characteristic: BluetoothRemoteGATTCharacteristic,
+	payload: Uint8Array<ArrayBuffer>,
+) => {
 	for (let offset = 0; offset < payload.length; offset += BLE_CHUNK_SIZE) {
+		if (!device.gatt?.connected) {
+			throw new Error("Lost the Bluetooth connection to the printer mid-print. Keep the printer awake and close to the phone, then try again.");
+		}
 		await characteristic.writeValueWithResponse(payload.subarray(offset, offset + BLE_CHUNK_SIZE));
 		await delay(BLE_WRITE_DELAY_MS);
 	}
@@ -94,7 +117,7 @@ export const printElementToZebra = async (element: HTMLElement) => {
 	try {
 		const service = await server.getPrimaryService(ZEBRA_PARSER_SERVICE_UUID);
 		const characteristic = await service.getCharacteristic(ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID);
-		await writeToPrinter(characteristic, payload);
+		await writeToPrinter(device, characteristic, payload);
 	} finally {
 		server.disconnect();
 	}

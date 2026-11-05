@@ -70,22 +70,24 @@ const trimBlankRows = (rows: string[], bytesPerRow: number) => {
 };
 
 /**
- * Splits the canvas into horizontal bands and returns one self-contained ZPL
- * format per band. Sending several small formats is far more reliable over BLE
- * than one large graphic, which can overrun the printer's input buffer.
+ * Splits the canvas into horizontal bands and packs them into a single ZPL
+ * format: one ^GFA graphic field per band at increasing y offsets. Banding
+ * keeps each graphic field small enough for the printer's parser, while a
+ * single format avoids the printer feeding to the tear-off position between
+ * bands (which left long blank gaps on the receipt).
  */
-const canvasToZplBands = (canvas: HTMLCanvasElement, bandHeight = 200): string[] => {
+const canvasToZpl = (canvas: HTMLCanvasElement, bandHeight = 200): string => {
 	const { bytesPerRow, rows } = canvasToBitmapRows(canvas);
 	const trimmed = trimBlankRows(rows, bytesPerRow);
-	const bands: string[] = [];
+	const fields: string[] = [];
 
 	for (let start = 0; start < trimmed.length; start += bandHeight) {
 		const bandRows = trimmed.slice(start, start + bandHeight);
 		const totalBytes = bytesPerRow * bandRows.length;
-		const graphic = `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bandRows.join("")}`;
-		bands.push(`^XA^PW${PRINTER_WIDTH_DOTS}^MNN^FO0,0${graphic}^FS^XZ`);
+		fields.push(`^FO0,${start}^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bandRows.join("")}^FS`);
 	}
-	return bands;
+	if (fields.length === 0) return "";
+	return `^XA^PW${PRINTER_WIDTH_DOTS}^MNN${fields.join("")}^XZ`;
 };
 
 const writeToPrinter = async (
@@ -134,22 +136,31 @@ export const printElementToZebra = async (element: HTMLElement) => {
 		throw new Error("This browser does not support direct Zebra printing. Use Chrome on Android, or use Print Receipt instead.");
 	}
 
+	// Wait for images (the logo) to finish loading before rasterizing.
+	const images = Array.from(element.querySelectorAll("img"));
+	await Promise.all(
+		images.map((img) =>
+			img.complete && img.naturalWidth > 0
+				? Promise.resolve()
+				: new Promise<void>((resolve) => {
+						img.addEventListener("load", () => resolve(), { once: true });
+						img.addEventListener("error", () => resolve(), { once: true });
+					}),
+		),
+	);
+
 	const { default: html2canvas } = await import("html2canvas");
 	const rendered = await html2canvas(element, {
 		backgroundColor: "#ffffff",
 		scale: PRINTER_WIDTH_DOTS / element.offsetWidth,
 	});
 
-	const bands = canvasToZplBands(rendered);
-	if (bands.length === 0) throw new Error("The receipt rendered as a blank image.");
+	const zpl = canvasToZpl(rendered);
+	if (!zpl) throw new Error("The receipt rendered as a blank image.");
 
 	const { device, server, characteristic } = await connectToPrinter();
 	try {
-		for (const band of bands) {
-			await sendZpl(device, characteristic, band);
-			// Let the printer drain each band before sending the next.
-			await delay(150);
-		}
+		await sendZpl(device, characteristic, zpl);
 		// Feed so the receipt can be torn off.
 		await sendZpl(device, characteristic, "^XA^XZ\n\n\n");
 	} finally {

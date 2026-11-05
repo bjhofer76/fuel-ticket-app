@@ -1215,6 +1215,117 @@ tbody tr:hover {
   line-height: 1.3;
 }
 
+/* Receipt layout rules live outside @media print so they also apply when
+   html2canvas rasterizes the receipt for direct Zebra printing (html2canvas
+   renders screen media, not print media). The receipt is display:none on
+   screen, so these rules only take effect for printing and Zebra capture. */
+.thermal-receipt-header {
+  padding-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  border-bottom: 1px dashed #000;
+}
+
+.thermal-receipt-header > strong:first-of-type {
+  font-size: 12pt;
+  overflow-wrap: anywhere;
+}
+
+.thermal-receipt-logo {
+  display: block;
+  width: 1.45in;
+  height: 0.71in;
+  margin: 0 auto 6px;
+  object-fit: contain;
+  image-rendering: crisp-edges;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.thermal-receipt-title {
+  margin-top: 7px;
+  font-size: 10pt;
+  letter-spacing: 1px;
+}
+
+.thermal-receipt-details {
+  padding: 8px 0;
+  display: grid;
+  gap: 4px;
+  border-bottom: 1px dashed #000;
+}
+
+.thermal-receipt-details > div,
+.thermal-receipt-totals > div,
+.thermal-receipt-row,
+.thermal-receipt-disclosure {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.thermal-receipt-details > div > span,
+.thermal-receipt-disclosure > span,
+.thermal-receipt-row > span {
+  min-width: 0;
+}
+
+.thermal-receipt-details > div > strong,
+.thermal-receipt-row > strong,
+.thermal-receipt-disclosure > strong,
+.thermal-receipt-totals > div > strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.thermal-receipt-products {
+  padding: 8px 0;
+}
+
+.thermal-receipt-products h3 {
+  margin: 0 0 6px;
+  font-size: 9pt;
+  letter-spacing: 0.7px;
+}
+
+.thermal-receipt-product {
+  padding: 6px 0;
+  break-inside: avoid;
+  border-bottom: 1px dashed #777;
+}
+
+.thermal-receipt-product-name {
+  display: block;
+  margin-bottom: 3px;
+  overflow-wrap: anywhere;
+}
+
+.thermal-receipt-disclosure {
+  font-size: 7pt;
+}
+
+.thermal-receipt-totals {
+  padding-top: 8px;
+  display: grid;
+  gap: 5px;
+  border-top: 1px dashed #000;
+}
+
+.thermal-receipt-net {
+  margin-top: 3px;
+  padding-top: 7px;
+  border-top: 1px solid #000;
+  font-size: 10pt;
+  font-weight: 700;
+}
+
+.thermal-receipt-footer {
+  padding: 12px 0 4px;
+  text-align: center;
+}
+
 .ticket-paper-header {
   min-height: 190px;
   padding: 23px 28px;
@@ -1750,113 +1861,6 @@ tbody tr:hover {
     font-family: "Courier New", monospace;
     font-size: 8pt;
     line-height: 1.3;
-  }
-
-  .thermal-receipt-header {
-    padding-bottom: 8px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    border-bottom: 1px dashed #000;
-  }
-
-  .thermal-receipt-header > strong:first-of-type {
-    font-size: 12pt;
-    overflow-wrap: anywhere;
-  }
-
-  .thermal-receipt-logo {
-    display: block;
-    width: 1.45in;
-    height: 0.71in;
-    margin: 0 auto 6px;
-    object-fit: contain;
-    image-rendering: crisp-edges;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  .thermal-receipt-title {
-    margin-top: 7px;
-    font-size: 10pt;
-    letter-spacing: 1px;
-  }
-
-  .thermal-receipt-details {
-    padding: 8px 0;
-    display: grid;
-    gap: 4px;
-    border-bottom: 1px dashed #000;
-  }
-
-  .thermal-receipt-details > div,
-  .thermal-receipt-totals > div,
-  .thermal-receipt-row,
-  .thermal-receipt-disclosure {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .thermal-receipt-details > div > span,
-  .thermal-receipt-disclosure > span,
-  .thermal-receipt-row > span {
-    min-width: 0;
-  }
-
-  .thermal-receipt-details > div > strong,
-  .thermal-receipt-row > strong,
-  .thermal-receipt-disclosure > strong,
-  .thermal-receipt-totals > div > strong {
-    text-align: right;
-    overflow-wrap: anywhere;
-  }
-
-  .thermal-receipt-products {
-    padding: 8px 0;
-  }
-
-  .thermal-receipt-products h3 {
-    margin: 0 0 6px;
-    font-size: 9pt;
-    letter-spacing: 0.7px;
-  }
-
-  .thermal-receipt-product {
-    padding: 6px 0;
-    break-inside: avoid;
-    border-bottom: 1px dashed #777;
-  }
-
-  .thermal-receipt-product-name {
-    display: block;
-    margin-bottom: 3px;
-    overflow-wrap: anywhere;
-  }
-
-  .thermal-receipt-disclosure {
-    font-size: 7pt;
-  }
-
-  .thermal-receipt-totals {
-    padding-top: 8px;
-    display: grid;
-    gap: 5px;
-    border-top: 1px dashed #000;
-  }
-
-  .thermal-receipt-net {
-    margin-top: 3px;
-    padding-top: 7px;
-    border-top: 1px solid #000;
-    font-size: 10pt;
-    font-weight: 700;
-  }
-
-  .thermal-receipt-footer {
-    padding: 12px 0 4px;
-    text-align: center;
   }
 
   .ticket-paper-header,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "./lib/supabase";
 import { companyCityLine, companyInfo } from "./lib/company-settings";
-import { isZebraPrintSupported, printElementToZebra, queryZebraStatus } from "./lib/zebra-print";
+import { isZebraPrintSupported, printElementToZebra, printZebraTestPattern, queryZebraStatus } from "./lib/zebra-print";
 import { LubeTicketPage } from "./LubeTicketPage";
 import gerstnerOilLogoUrl from "./assets/gerstner-oil-logo.png";
 import gerstnerOilLogoSvgUrl from "./assets/gerstner-oil-logo.svg";
@@ -1480,6 +1480,19 @@ function App() {
 			setZebraStatusLoading(false);
 		}
 	};
+	const printZebraTest = async () => {
+		if (zebraPrinting) return;
+		setZebraPrintError("");
+		setZebraPrinting(true);
+		try {
+			await printZebraTestPattern();
+		} catch (error) {
+			if (error instanceof DOMException && error.name === "NotFoundError") return; // user cancelled the device picker
+			setZebraPrintError(error instanceof Error ? error.message : "Unable to print the Zebra test pattern.");
+		} finally {
+			setZebraPrinting(false);
+		}
+	};
 	const createTicket = async (event: React.FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
 		if (
@@ -2513,6 +2526,11 @@ function App() {
 							{isZebraPrintSupported() && (
 								<button className="ticket-action-button" type="button" disabled={zebraStatusLoading} onClick={() => void checkZebraStatus()}>
 									{zebraStatusLoading ? "Checking…" : "Zebra Status"}
+								</button>
+							)}
+							{isZebraPrintSupported() && (
+								<button className="ticket-action-button" type="button" disabled={zebraPrinting} onClick={() => void printZebraTest()}>
+									Zebra Test
 								</button>
 							)}
 							<button

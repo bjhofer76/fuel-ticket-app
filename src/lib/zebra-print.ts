@@ -69,11 +69,23 @@ const trimBlankRows = (rows: string[], bytesPerRow: number) => {
 	return rows.slice(0, end);
 };
 
-const canvasToZplGraphic = (canvas: HTMLCanvasElement): string => {
+/**
+ * Splits the canvas into horizontal bands and returns one self-contained ZPL
+ * format per band. Sending several small formats is far more reliable over BLE
+ * than one large graphic, which can overrun the printer's input buffer.
+ */
+const canvasToZplBands = (canvas: HTMLCanvasElement, bandHeight = 200): string[] => {
 	const { bytesPerRow, rows } = canvasToBitmapRows(canvas);
 	const trimmed = trimBlankRows(rows, bytesPerRow);
-	const totalBytes = bytesPerRow * trimmed.length;
-	return `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${trimmed.join("")}`;
+	const bands: string[] = [];
+
+	for (let start = 0; start < trimmed.length; start += bandHeight) {
+		const bandRows = trimmed.slice(start, start + bandHeight);
+		const totalBytes = bytesPerRow * bandRows.length;
+		const graphic = `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bandRows.join("")}`;
+		bands.push(`^XA^PW${PRINTER_WIDTH_DOTS}^MNN^FO0,0${graphic}^FS^XZ`);
+	}
+	return bands;
 };
 
 const writeToPrinter = async (
@@ -88,6 +100,29 @@ const writeToPrinter = async (
 		await characteristic.writeValueWithResponse(payload.subarray(offset, offset + BLE_CHUNK_SIZE));
 		await delay(BLE_WRITE_DELAY_MS);
 	}
+};
+
+/** Connects to a Zebra printer over BLE and returns the device + write target. */
+const connectToPrinter = async () => {
+	const device = await navigator.bluetooth.requestDevice({
+		filters: [{ services: [ZEBRA_ADVERTISED_SERVICE_UUID] }],
+		optionalServices: [ZEBRA_PARSER_SERVICE_UUID],
+	});
+	if (!device.gatt) throw new Error("The selected device does not support Bluetooth LE printing.");
+
+	const server = await device.gatt.connect();
+	const service = await server.getPrimaryService(ZEBRA_PARSER_SERVICE_UUID);
+	const characteristic = await service.getCharacteristic(ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID);
+	return { device, server, service, characteristic };
+};
+
+const sendZpl = async (
+	device: BluetoothDevice,
+	characteristic: BluetoothRemoteGATTCharacteristic,
+	zpl: string,
+) => {
+	const payload: Uint8Array<ArrayBuffer> = new TextEncoder().encode(zpl);
+	await writeToPrinter(device, characteristic, payload);
 };
 
 /**
@@ -105,29 +140,34 @@ export const printElementToZebra = async (element: HTMLElement) => {
 		scale: PRINTER_WIDTH_DOTS / element.offsetWidth,
 	});
 
-	const graphic = canvasToZplGraphic(rendered);
-	// Configure the job for continuous receipt media and no gap/black-mark
-	// tracking, then print the graphic and feed so it can be torn off:
-	//   ^MNN  = continuous media, no sensor tracking
-	//   ^MNY  = (redundant) mark/sensor off for receipt paper
-	//   ^LLn  = label length = the bitmap height, so the printer knows how much
-	//           paper one receipt occupies
-	//   ^XZ   = end of format; trailing line feeds advance the paper
-	const labelLength = rendered.height;
-	const zpl = `^XA^PW${PRINTER_WIDTH_DOTS}^MNN^LL${labelLength}^FO0,0${graphic}^FS^XZ\n\n\n`;
-	const payload: Uint8Array<ArrayBuffer> = new TextEncoder().encode(zpl);
+	const bands = canvasToZplBands(rendered);
+	if (bands.length === 0) throw new Error("The receipt rendered as a blank image.");
 
-	const device = await navigator.bluetooth.requestDevice({
-		filters: [{ services: [ZEBRA_ADVERTISED_SERVICE_UUID] }],
-		optionalServices: [ZEBRA_PARSER_SERVICE_UUID],
-	});
-	if (!device.gatt) throw new Error("The selected device does not support Bluetooth LE printing.");
-
-	const server = await device.gatt.connect();
+	const { device, server, characteristic } = await connectToPrinter();
 	try {
-		const service = await server.getPrimaryService(ZEBRA_PARSER_SERVICE_UUID);
-		const characteristic = await service.getCharacteristic(ZEBRA_TO_PRINTER_CHARACTERISTIC_UUID);
-		await writeToPrinter(device, characteristic, payload);
+		for (const band of bands) {
+			await sendZpl(device, characteristic, band);
+			// Let the printer drain each band before sending the next.
+			await delay(150);
+		}
+		// Feed so the receipt can be torn off.
+		await sendZpl(device, characteristic, "^XA^XZ\n\n\n");
+	} finally {
+		server.disconnect();
+	}
+};
+
+/**
+ * Prints a tiny test pattern (a box and a line of text) to confirm the BLE
+ * pipeline works end to end without sending a large bitmap.
+ */
+export const printZebraTestPattern = async () => {
+	if (!isZebraPrintSupported()) {
+		throw new Error("This browser does not support direct Zebra printing. Use Chrome on Android.");
+	}
+	const { server, characteristic, device } = await connectToPrinter();
+	try {
+		await sendZpl(device, characteristic, "^XA^PW576^MNN^FO20,20^GB536,4,4^FS^FO20,60^ADN,36,20^FDZEBRA TEST OK^FS^FO20,140^GB536,4,4^FS^XZ\n\n\n");
 	} finally {
 		server.disconnect();
 	}

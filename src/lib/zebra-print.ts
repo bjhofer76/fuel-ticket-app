@@ -104,7 +104,11 @@ export const printElementToZebra = async (element: HTMLElement) => {
 		scale: PRINTER_WIDTH_DOTS / element.offsetWidth,
 	});
 
-	const zpl = `^XA^PW${PRINTER_WIDTH_DOTS}^FO0,0${canvasToZplGraphic(rendered)}^FS^XZ`;
+	const graphic = canvasToZplGraphic(rendered);
+	// ^MNN = continuous (receipt) media, no gap tracking. ^XZ ends the format and
+	// the trailing line feeds advance the paper so the receipt is committed and
+	// can be torn off.
+	const zpl = `^XA^PW${PRINTER_WIDTH_DOTS}^MNN^FO0,0${graphic}^FS^XZ\n\n\n`;
 	const payload: Uint8Array<ArrayBuffer> = new TextEncoder().encode(zpl);
 
 	const device = await navigator.bluetooth.requestDevice({

@@ -1212,6 +1212,7 @@ tbody tr:hover {
   background: #fff;
   font-family: "Courier New", monospace;
   font-size: 10pt;
+  font-weight: 700;
   line-height: 1.3;
 }
 

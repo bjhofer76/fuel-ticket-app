@@ -2689,7 +2689,6 @@ function App() {
 						</article>
 						<article className="thermal-receipt" ref={thermalReceiptRef} aria-label="Thermal delivery receipt">
 							<header className="thermal-receipt-header">
-								<img className="thermal-receipt-logo" src={gerstnerOilLogoUrl} alt="Gerstner Oil Company" />
 								<strong>{companyInfo.companyName || "FUEL DESK"}</strong>
 								{companyInfo.address && <span>{companyInfo.address}</span>}
 								{companyCityLine && <span>{companyCityLine}</span>}

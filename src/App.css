@@ -1309,27 +1309,31 @@ tbody tr:hover {
 }
 
 .thermal-receipt-totals {
-  padding-top: 8px;
+  padding-top: 6px;
   display: grid;
-  gap: 5px;
+  gap: 3px;
   border-top: 1px dashed #000;
 }
 
 .thermal-receipt-net {
-  margin-top: 3px;
-  padding-top: 7px;
+  margin-top: 2px;
+  padding-top: 5px;
   border-top: 1px solid #000;
   font-size: 12pt;
   font-weight: 700;
 }
 
 .thermal-receipt-promptpay {
-  margin-top: 3px;
-  padding-top: 7px;
+  margin-top: 2px;
+  padding-top: 5px;
   border-top: 1px solid #000;
   font-size: 7pt;
   font-weight: 700;
-  white-space: nowrap;
+  align-items: flex-end;
+}
+
+.thermal-receipt-promptpay-label {
+  line-height: 1.15;
 }
 
 .thermal-receipt-footer {

@@ -14,10 +14,10 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
-/** The printer cannot print the last few dots on the right edge, so render the
-    receipt into a slightly narrower area centered on the full-width canvas.
-    This keeps right-aligned amounts from being clipped. */
-const PRINTABLE_WIDTH_DOTS = 560;
+/** The printer cannot print the last several dots on the right edge, so render
+    the receipt into a narrower area centered on the full-width canvas. This
+    keeps right-aligned amounts from being clipped. */
+const PRINTABLE_WIDTH_DOTS = 544;
 
 /** BLE write payload. Larger writes mean fewer BLE round-trips, which is the
     dominant cost. The ZQ320's parser buffer is small, so we pair big writes

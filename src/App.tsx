@@ -2736,7 +2736,12 @@ function App() {
 								<div><span>Sales tax</span><strong>{formatCurrency(ticketSalesTaxTotal(selectedTicket))}</strong></div>
 								{!isLubeTicket(selectedTicket) && <div><span>Discount</span><strong>{formatCurrency(ticketPromptPayDiscount(selectedTicket))}</strong></div>}
 								<div className="thermal-receipt-net"><span>Net due</span><strong>{formatCurrency(ticketDisplayNetDue(selectedTicket))}</strong></div>
-								{!isLubeTicket(selectedTicket) && <div className="thermal-receipt-promptpay"><span>$0.07/gallon discount if paid in 10 days</span><strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong></div>}
+								{!isLubeTicket(selectedTicket) && (
+									<div className="thermal-receipt-promptpay">
+										<span className="thermal-receipt-promptpay-label">$0.07/gallon discount<br />if paid in 10 days</span>
+										<strong>{formatCurrency(ticketNetAmountDue(selectedTicket))}</strong>
+									</div>
+								)}
 							</section>
 							<footer className="thermal-receipt-footer">Thank you for your business.</footer>
 						</article>

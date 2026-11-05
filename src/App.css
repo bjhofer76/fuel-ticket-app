@@ -1261,7 +1261,8 @@ tbody tr:hover {
 .thermal-receipt-details > div,
 .thermal-receipt-totals > div,
 .thermal-receipt-row,
-.thermal-receipt-disclosure {
+.thermal-receipt-disclosure,
+.thermal-receipt-promptpay {
   display: flex;
   justify-content: space-between;
   gap: 8px;
@@ -1320,6 +1321,15 @@ tbody tr:hover {
   border-top: 1px solid #000;
   font-size: 12pt;
   font-weight: 700;
+}
+
+.thermal-receipt-promptpay {
+  margin-top: 3px;
+  padding-top: 7px;
+  border-top: 1px solid #000;
+  font-size: 7pt;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .thermal-receipt-footer {

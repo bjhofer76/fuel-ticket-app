@@ -14,12 +14,13 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
-/** BLE write payload size. Android negotiates a large enough MTU that 512-byte
-    writes with response are reliable, and the OS fragments them as needed. */
-const BLE_CHUNK_SIZE = 512;
+/** BLE write payload size. The ZQ320's parser buffer is small, so keep writes
+    modest even though Android could accept larger ones. */
+const BLE_CHUNK_SIZE = 180;
 
-/** Short pause between BLE writes so the printer's parser buffer is not overrun. */
-const BLE_WRITE_DELAY_MS = 15;
+/** Pause between BLE writes so the printer's parser buffer is not overrun.
+    With ZPL compression the payload is small, so this pacing costs little. */
+const BLE_WRITE_DELAY_MS = 40;
 
 export const isZebraPrintSupported = () =>
 	typeof navigator !== "undefined" && typeof navigator.bluetooth !== "undefined";

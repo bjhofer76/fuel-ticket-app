@@ -19,10 +19,8 @@ const PRINTER_WIDTH_DOTS = 576;
     with a short pause to let it drain and avoid garbled output. */
 const BLE_CHUNK_SIZE = 512;
 
-/** Pause between BLE writes so the printer's parser buffer is not overrun.
-    With compression the payload is small, so we can afford a conservative
-    pause that gives the parser time to decompress each band. */
-const BLE_WRITE_DELAY_MS = 40;
+/** Pause between BLE writes so the printer's parser buffer is not overrun. */
+const BLE_WRITE_DELAY_MS = 12;
 
 export const isZebraPrintSupported = () =>
 	typeof navigator !== "undefined" && typeof navigator.bluetooth !== "undefined";
@@ -72,47 +70,9 @@ const trimBlankRows = (rows: string[], bytesPerRow: number) => {
 	return rows.slice(0, end);
 };
 
-// ZPL's alternative data compression for graphic fields: a repeat-count letter
-// before a hex digit replaces a run of that digit. Lowercase g-z = 1-20 repeats,
-// uppercase G-Y = 20-400 in steps of 20, and a comma fills the rest of the row
-// with zeros. Receipts are mostly blank, so this shrinks the payload ~5x.
-// (An earlier attempt garbled output, but that was at 15 ms pacing - too fast
-// for the parser to decompress-and-print. At a conservative pause it is clean.)
-const REPEAT_1_TO_20 = "ghijklmnopqrstuvwxyz";
-const REPEAT_20_TO_400 = "GHIJKLMNOPQRSTUVWXY";
-
-const compressHexRow = (row: string) => {
-	let out = "";
-	let i = 0;
-	while (i < row.length) {
-		const digit = row[i];
-		let run = 1;
-		while (i + run < row.length && row[i + run] === digit) run += 1;
-
-		if (digit === "0" && i + run === row.length && run >= 2) {
-			out += ",";
-			break;
-		}
-
-		let encoded = "";
-		let remaining = run;
-		while (remaining > 400) {
-			encoded += `Y${digit}`;
-			remaining -= 400;
-		}
-		if (remaining >= 20) {
-			const blocks = Math.floor(remaining / 20);
-			encoded += REPEAT_20_TO_400[blocks - 1] + digit;
-			remaining -= blocks * 20;
-		}
-		if (remaining > 0) encoded += REPEAT_1_TO_20[remaining - 1] + digit;
-
-		const raw = digit.repeat(run);
-		out += encoded.length < raw.length ? encoded : raw;
-		i += run;
-	}
-	return out;
-};
+// Note: ZPL's run-length "alternative data compression" was tried and produced
+// garbled output on the ZQ320 over BLE (the parser appears to mishandle the
+// repeat-count letters at speed), so we send plain uncompressed hex rows.
 
 /**
  * Splits the canvas into horizontal bands and packs them into a single ZPL
@@ -129,8 +89,7 @@ const canvasToZpl = (canvas: HTMLCanvasElement, bandHeight = 200): string => {
 	for (let start = 0; start < trimmed.length; start += bandHeight) {
 		const bandRows = trimmed.slice(start, start + bandHeight);
 		const totalBytes = bytesPerRow * bandRows.length;
-		const data = bandRows.map(compressHexRow).join("");
-		fields.push(`^FO0,${start}^GFA,${totalBytes},${totalBytes},${bytesPerRow},${data}^FS`);
+		fields.push(`^FO0,${start}^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bandRows.join("")}^FS`);
 	}
 	if (fields.length === 0) return "";
 	return `^XA^PW${PRINTER_WIDTH_DOTS}^MNN${fields.join("")}^XZ`;

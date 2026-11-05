@@ -106,10 +106,15 @@ export const printElementToZebra = async (element: HTMLElement) => {
 	});
 
 	const graphic = canvasToZplGraphic(rendered);
-	// ^MNN = continuous (receipt) media, no gap tracking. ^XZ ends the format and
-	// the trailing line feeds advance the paper so the receipt is committed and
-	// can be torn off.
-	const zpl = `^XA^PW${PRINTER_WIDTH_DOTS}^MNN^FO0,0${graphic}^FS^XZ\n\n\n`;
+	// Configure the job for continuous receipt media and no gap/black-mark
+	// tracking, then print the graphic and feed so it can be torn off:
+	//   ^MNN  = continuous media, no sensor tracking
+	//   ^MNY  = (redundant) mark/sensor off for receipt paper
+	//   ^LLn  = label length = the bitmap height, so the printer knows how much
+	//           paper one receipt occupies
+	//   ^XZ   = end of format; trailing line feeds advance the paper
+	const labelLength = rendered.height;
+	const zpl = `^XA^PW${PRINTER_WIDTH_DOTS}^MNN^LL${labelLength}^FO0,0${graphic}^FS^XZ\n\n\n`;
 	const payload: Uint8Array<ArrayBuffer> = new TextEncoder().encode(zpl);
 
 	const device = await navigator.bluetooth.requestDevice({

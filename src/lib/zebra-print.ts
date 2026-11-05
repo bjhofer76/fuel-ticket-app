@@ -14,13 +14,13 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
-/** BLE write payload. Kept modest - the ZQ320's parser buffer is small and
-    large writes overrun it (garbled output). */
-const BLE_CHUNK_SIZE = 240;
+/** BLE write payload. Larger writes mean fewer BLE round-trips, which is the
+    dominant cost. The ZQ320's parser buffer is small, so we pair big writes
+    with a short pause to let it drain and avoid garbled output. */
+const BLE_CHUNK_SIZE = 512;
 
-/** Pause between BLE writes so the printer's parser buffer is not overrun.
-    30 ms was proven clean; 20 ms is still safe with the smaller payload. */
-const BLE_WRITE_DELAY_MS = 20;
+/** Pause between BLE writes so the printer's parser buffer is not overrun. */
+const BLE_WRITE_DELAY_MS = 12;
 
 export const isZebraPrintSupported = () =>
 	typeof navigator !== "undefined" && typeof navigator.bluetooth !== "undefined";

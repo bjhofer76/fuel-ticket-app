@@ -1104,6 +1104,7 @@ tbody tr:hover {
   padding: 24px;
   display: grid;
   place-items: center;
+  overflow-y: auto;
   background: rgb(20 37 32 / 48%);
   animation: fade-in 150ms ease both;
 }
@@ -1111,6 +1112,10 @@ tbody tr:hover {
 .ticket-modal {
   width: min(760px, 100%);
   max-height: min(80vh, 760px);
+  max-height: min(80dvh, 760px);
+  /* Auto margins center the modal but collapse when it overflows, keeping the
+     action bar reachable via backdrop scrolling instead of clipped off-screen. */
+  margin: auto;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -3000,6 +3005,7 @@ a {
 
   .ticket-modal {
     max-height: calc(100vh - 20px);
+    max-height: calc(100dvh - 20px);
   }
 
   .ticket-modal-actions {

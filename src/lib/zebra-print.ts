@@ -14,12 +14,12 @@ const ZEBRA_ADVERTISED_SERVICE_UUID = 0xfe79;
 /** ZQ320 Plus print head: 203 dpi across a 72 mm (2.83 in) print width. */
 const PRINTER_WIDTH_DOTS = 576;
 
-/** Conservative BLE write payload; the ZQ320 negotiates a small MTU, and large
-    writes can stall or drop the link mid-print. */
-const BLE_CHUNK_SIZE = 100;
+/** BLE write payload size. Android negotiates a large enough MTU that 512-byte
+    writes with response are reliable, and the OS fragments them as needed. */
+const BLE_CHUNK_SIZE = 512;
 
-/** Delay between BLE writes so the printer's parser buffer is not overrun. */
-const BLE_WRITE_DELAY_MS = 60;
+/** Short pause between BLE writes so the printer's parser buffer is not overrun. */
+const BLE_WRITE_DELAY_MS = 15;
 
 export const isZebraPrintSupported = () =>
 	typeof navigator !== "undefined" && typeof navigator.bluetooth !== "undefined";
@@ -69,6 +69,46 @@ const trimBlankRows = (rows: string[], bytesPerRow: number) => {
 	return rows.slice(0, end);
 };
 
+// ZPL's alternative data compression for graphic fields: a repeat-count letter
+// before a hex digit replaces a run of that digit. Lowercase g-z = 1-20 repeats,
+// uppercase G-Y = 20-400 in steps of 20, and a comma fills the rest of the row
+// with zeros. Receipts are mostly blank, so this shrinks the payload several-fold.
+const REPEAT_1_TO_20 = "ghijklmnopqrstuvwxyz";
+const REPEAT_20_TO_400 = "GHIJKLMNOPQRSTUVWXY";
+
+const compressHexRow = (row: string) => {
+	let out = "";
+	let i = 0;
+	while (i < row.length) {
+		const digit = row[i];
+		let run = 1;
+		while (i + run < row.length && row[i + run] === digit) run += 1;
+
+		if (digit === "0" && i + run === row.length && run >= 2) {
+			out += ",";
+			break;
+		}
+
+		let encoded = "";
+		let remaining = run;
+		while (remaining > 400) {
+			encoded += `Y${digit}`;
+			remaining -= 400;
+		}
+		if (remaining >= 20) {
+			const blocks = Math.floor(remaining / 20);
+			encoded += REPEAT_20_TO_400[blocks - 1] + digit;
+			remaining -= blocks * 20;
+		}
+		if (remaining > 0) encoded += REPEAT_1_TO_20[remaining - 1] + digit;
+
+		const raw = digit.repeat(run);
+		out += encoded.length < raw.length ? encoded : raw;
+		i += run;
+	}
+	return out;
+};
+
 /**
  * Splits the canvas into horizontal bands and packs them into a single ZPL
  * format: one ^GFA graphic field per band at increasing y offsets. Banding
@@ -84,7 +124,8 @@ const canvasToZpl = (canvas: HTMLCanvasElement, bandHeight = 200): string => {
 	for (let start = 0; start < trimmed.length; start += bandHeight) {
 		const bandRows = trimmed.slice(start, start + bandHeight);
 		const totalBytes = bytesPerRow * bandRows.length;
-		fields.push(`^FO0,${start}^GFA,${totalBytes},${totalBytes},${bytesPerRow},${bandRows.join("")}^FS`);
+		const data = bandRows.map(compressHexRow).join("");
+		fields.push(`^FO0,${start}^GFA,${totalBytes},${totalBytes},${bytesPerRow},${data}^FS`);
 	}
 	if (fields.length === 0) return "";
 	return `^XA^PW${PRINTER_WIDTH_DOTS}^MNN${fields.join("")}^XZ`;
